@@ -138,7 +138,13 @@
       </div>
       <div class="knowledge-layout">
         <section class="knowledge-add">
-          <label>Title <input id="knowledgeTitleInput" type="text" maxlength="160" placeholder="e.g. Meta Ads Course — Module 4" /></label>
+          <div class="knowledge-url-box">
+            <label>Import websites <textarea id="knowledgeUrls" rows="3" placeholder="Paste one public URL per line — up to 20 pages"></textarea></label>
+            <button id="importKnowledgeUrls" class="secondary-btn">Import websites in background</button>
+            <small id="knowledgeUrlStatus">Pages are extracted, deduplicated, chunked, and indexed into your private library.</small>
+          </div>
+          <div class="knowledge-divider"><span>or add your own material</span></div>
+          <label>Title <input id="knowledgeTitleInput" type="text" maxlength="160" placeholder="e.g. Meta Ads notes — Module 4" /></label>
           <label>Paste text <textarea id="knowledgeText" rows="13" maxlength="5000000" placeholder="Paste notes, transcripts, research, course material, code, or long documents here…"></textarea></label>
           <div class="drop-row">
             <input id="knowledgeFile" type="file" multiple accept=".txt,.md,.csv,.json,.html,.htm,.log,.js,.ts,.tsx,.jsx,.py,.sql,.css,text/*,application/json" />
