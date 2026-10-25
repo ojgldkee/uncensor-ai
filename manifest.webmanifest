@@ -2,8 +2,9 @@
   "name": "Uncensor AI",
   "short_name": "Uncensor AI",
   "description": "Private personal AI chat and knowledge workspace",
-  "start_url": "/",
+  "start_url": "./",
   "display": "standalone",
   "background_color": "#07090e",
-  "theme_color": "#07090e"
+  "theme_color": "#07090e",
+  "scope": "./"
 }
