@@ -6,7 +6,9 @@ const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
 const OPENROUTER_KEY = Deno.env.get('OPENROUTER_API_KEY') || ''
 const SUMMARY_MODEL = Deno.env.get('OPENROUTER_SUMMARY_MODEL') || 'z-ai/glm-5.3-flash'
 const db = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } })
-const embedder = new Supabase.ai.Session('gte-small')
+const EMBED_MODEL = Deno.env.get('OPENROUTER_EMBED_MODEL') || 'openai/text-embedding-3-small'
+const EMBED_DIMENSIONS = 384
+const KNOWLEDGE_BATCH = Math.max(32, Math.min(256, Number(Deno.env.get('KNOWLEDGE_EMBED_BATCH') || '192')))
 
 type QueueJob = {
   msg_id: number
@@ -19,10 +21,52 @@ type QueueJob = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 
+async function embeddingBatch(texts: string[]) {
+  if (!OPENROUTER_KEY) throw new Error('OPENROUTER_API_KEY is not configured for embeddings')
+  if (!texts.length) return []
+  const res = await fetch('https://openrouter.ai/api/v1/embeddings', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer ' + OPENROUTER_KEY,
+      'content-type': 'application/json',
+      'X-Title': 'Uncensor AI Knowledge Indexer',
+    },
+    body: JSON.stringify({
+      model: EMBED_MODEL,
+      input: texts.map(t => String(t || '').slice(0, 7000)),
+      dimensions: EMBED_DIMENSIONS,
+      encoding_format: 'float',
+      provider: { allow_fallbacks: true },
+    }),
+    signal: AbortSignal.timeout(60000),
+  })
+  const raw = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(raw?.error?.message || ('Embedding API ' + res.status))
+  const data = Array.isArray(raw?.data) ? [...raw.data].sort((a,b)=>Number(a.index||0)-Number(b.index||0)) : []
+  const vectors = data.map((x:any)=>x?.embedding)
+  if (vectors.length !== texts.length || vectors.some((v:any)=>!Array.isArray(v) || v.length !== EMBED_DIMENSIONS)) {
+    throw new Error('Embedding API returned an unexpected batch shape')
+  }
+  const usage = raw?.usage || null
+  if (usage) {
+    try {
+      await db.from('private_ai_usage').insert({
+        conversation_id: null,
+        model: EMBED_MODEL,
+        operation: 'embedding',
+        prompt_tokens: Number(usage.prompt_tokens || usage.total_tokens || 0),
+        completion_tokens: 0,
+        total_tokens: Number(usage.total_tokens || usage.prompt_tokens || 0),
+        cost_usd: Number(usage.cost || 0),
+      })
+    } catch {}
+  }
+  return vectors
+}
+
 async function embedding(text: string) {
-  const out = await embedder.run(text.slice(0, 7000), { mean_pool: true, normalize: true })
-  if (!Array.isArray(out) || out.length !== 384) throw new Error('Embedding returned an unexpected vector')
-  return out
+  const out = await embeddingBatch([text])
+  return out[0]
 }
 
 function extractJson(text: string) {
@@ -101,41 +145,43 @@ async function archive(jobId: number) {
   await db.rpc('private_ai_archive_job', { job_id: jobId })
 }
 
-async function processKnowledge(job: QueueJob) {
-  const chunkId = Number(job.message.chunk_id || 0)
-  const sourceId = String(job.message.source_id || '')
-  if (!chunkId || !sourceId) { await archive(job.msg_id); return 'invalid knowledge job' }
+async function processKnowledgeBatch() {
+  const claim = await db.rpc('private_ai_claim_knowledge_chunks', {
+    batch_size: KNOWLEDGE_BATCH,
+    lease_seconds: 180,
+  })
+  if (claim.error) throw claim.error
+  const rows = (claim.data || []) as Array<{id:number,source_id:string,content:string}>
+  if (!rows.length) return { processed: 0, sources: 0 }
 
-  const { data: chunk, error } = await db.from('private_ai_knowledge_chunks')
-    .select('id,source_id,content,embedding').eq('id', chunkId).maybeSingle()
-  if (error) throw error
-  if (!chunk) { await finish(job.msg_id); return 'chunk already deleted' }
-  if (chunk.embedding) { await finish(job.msg_id); return 'already embedded' }
+  const vectors = await embeddingBatch(rows.map(r => r.content))
+  const payload = rows.map((r,i)=>({ id:r.id, embedding:JSON.stringify(vectors[i]) }))
+  const saved = await db.rpc('private_ai_set_chunk_embeddings', { payload })
+  if (saved.error) throw saved.error
 
-  const vector = await embedding(String(chunk.content || ''))
-  const update = await db.from('private_ai_knowledge_chunks').update({ embedding: vector }).eq('id', chunkId)
-  if (update.error) throw update.error
+  const sourceIds = [...new Set(rows.map(r=>r.source_id).filter(Boolean))]
+  if (sourceIds.length) {
+    const refreshed = await db.rpc('private_ai_refresh_knowledge_progress', { source_ids: sourceIds })
+    if (refreshed.error) throw refreshed.error
+  }
+  return { processed: Number(saved.data || rows.length), sources: sourceIds.length }
+}
 
-  const count = await db.from('private_ai_knowledge_chunks')
-    .select('id', { count: 'exact', head: true }).eq('source_id', sourceId).not('embedding', 'is', null)
-  if (count.error) throw count.error
-  const source = await db.from('private_ai_knowledge_sources').select('chunk_count').eq('id', sourceId).maybeSingle()
-  if (source.error) throw source.error
-
-  const embedded = Number(count.count || 0)
-  const total = Number(source.data?.chunk_count || 0)
-  const ready = total > 0 && embedded >= total
-  const su = await db.from('private_ai_knowledge_sources').update({
-    embedded_chunk_count: embedded,
-    status: ready ? 'ready' : 'processing',
-    completed_at: ready ? new Date().toISOString() : null,
-    last_error: null,
-    updated_at: new Date().toISOString(),
-  }).eq('id', sourceId)
-  if (su.error) throw su.error
-
-  await finish(job.msg_id)
-  return ready ? 'source ready' : 'chunk embedded'
+async function processMemoryBackfillBatch() {
+  const q = await db.from('private_ai_memories')
+    .select('id,content')
+    .eq('active', true)
+    .is('embedding', null)
+    .order('updated_at', { ascending: true })
+    .limit(32)
+  if (q.error) throw q.error
+  const rows = q.data || []
+  if (!rows.length) return 0
+  const vectors = await embeddingBatch(rows.map((r:any)=>String(r.content||'')))
+  const payload = rows.map((r:any,i:number)=>({id:r.id,embedding:JSON.stringify(vectors[i])}))
+  const saved = await db.rpc('private_ai_set_memory_embeddings', { payload })
+  if (saved.error) throw saved.error
+  return Number(saved.data || rows.length)
 }
 
 async function processSummary(job: QueueJob) {
@@ -245,7 +291,7 @@ async function processMemories(job: QueueJob) {
 
 async function processJob(job: QueueJob) {
   const type = String(job.message?.type || '')
-  if (type === 'embed_knowledge_chunk') return processKnowledge(job)
+  if (type === 'embed_knowledge_chunk') { await finish(job.msg_id); return 'legacy embedding job removed' }
   if (type === 'summarize_conversation') return processSummary(job)
   if (type === 'extract_memories') return processMemories(job)
   await archive(job.msg_id)
@@ -261,45 +307,65 @@ Deno.serve(async (req) => {
   if (cfg.error) return json({ error: cfg.error.message }, 500)
   if (!cfg.data?.worker_token || token !== cfg.data.worker_token) return json({ error: 'Unauthorized' }, 401)
 
-  await db.from('private_ai_runtime_config').update({ last_worker_run_at: new Date().toISOString(), last_worker_error: null, updated_at: new Date().toISOString() }).eq('id', true)
+  const started = new Date().toISOString()
+  await db.from('private_ai_runtime_config').update({
+    last_worker_run_at: started,
+    last_worker_error: null,
+    updated_at: started,
+  }).eq('id', true)
+
+  const results: any[] = []
+  let workerError: string | null = null
+
+  try {
+    const knowledge = await processKnowledgeBatch()
+    results.push({ type:'knowledge_batch', ok:true, ...knowledge })
+  } catch (error) {
+    workerError = error instanceof Error ? error.message : String(error)
+    console.error('knowledge batch failed', workerError)
+    results.push({ type:'knowledge_batch', ok:false, error:workerError })
+  }
+
+  try {
+    const memories = await processMemoryBackfillBatch()
+    if (memories) results.push({ type:'memory_embedding_backfill', ok:true, processed:memories })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (!workerError) workerError = message
+    console.error('memory embedding backfill failed', message)
+    results.push({ type:'memory_embedding_backfill', ok:false, error:message })
+  }
 
   const read = await db.rpc('private_ai_read_jobs', { qty: 8, visibility_seconds: 180 })
-  if (read.error) return json({ error: read.error.message }, 500)
-  const jobs = (read.data || []) as QueueJob[]
-  const results: any[] = []
-
-  for (const job of jobs) {
-    try {
-      const detail = await processJob(job)
-      results.push({ id: job.msg_id, type: job.message?.type, ok: true, detail })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      console.error('uncensor-worker job failed', { id: job.msg_id, type: job.message?.type, read_ct: job.read_ct, error: message })
-      const sourceId = String(job.message?.source_id || '')
-      if (sourceId) {
-        try {
-          await db.from('private_ai_knowledge_sources').update({
-            status: job.read_ct >= 8 ? 'failed' : 'processing',
-            last_error: message.slice(0, 2000),
-            failure_count: job.read_ct,
-            updated_at: new Date().toISOString(),
-          }).eq('id', sourceId)
-        } catch {}
+  if (read.error) {
+    if (!workerError) workerError = read.error.message
+    results.push({ type:'queue_read', ok:false, error:read.error.message })
+  } else {
+    const jobs = (read.data || []) as QueueJob[]
+    for (const job of jobs) {
+      try {
+        const detail = await processJob(job)
+        results.push({ id:job.msg_id, type:job.message?.type, ok:true, detail })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (!workerError) workerError = message
+        console.error('uncensor-worker job failed', { id:job.msg_id, type:job.message?.type, read_ct:job.read_ct, error:message })
+        const providerMissing = message.includes('OPENROUTER_API_KEY')
+        if (job.read_ct >= 8 && !providerMissing) {
+          try { await archive(job.msg_id) } catch {}
+        }
+        results.push({ id:job.msg_id, type:job.message?.type, ok:false, error:message, retry:job.read_ct < 8 })
       }
-      const providerMissing = message.includes('OPENROUTER_API_KEY')
-      if (job.read_ct >= 8 && !providerMissing) {
-        try { await archive(job.msg_id) } catch {}
-      }
-      results.push({ id: job.msg_id, type: job.message?.type, ok: false, error: message, retry: job.read_ct < 8 })
     }
   }
 
-  const failed = results.filter((r: any) => !r.ok)
+  const now = new Date().toISOString()
   await db.from('private_ai_runtime_config').update({
-    last_worker_success_at: new Date().toISOString(),
-    last_worker_error: failed.length ? String(failed[0].error || '').slice(0, 2000) : null,
-    updated_at: new Date().toISOString(),
+    last_worker_success_at: workerError ? undefined : now,
+    last_worker_error: workerError ? workerError.slice(0,2000) : null,
+    backend_version: 'v4',
+    updated_at: now,
   }).eq('id', true)
 
-  return json({ ok: true, processed: jobs.length, results })
+  return json({ ok: !workerError, embedding_model: EMBED_MODEL, batch_size: KNOWLEDGE_BATCH, results })
 })
