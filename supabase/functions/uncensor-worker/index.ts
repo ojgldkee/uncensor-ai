@@ -69,6 +69,72 @@ async function embedding(text: string) {
   return out[0]
 }
 
+async function contentHash(text: string) {
+  const normalized = String(text || '').replace(/\r\n/g,'\n').replace(/[ \t]+\n/g,'\n').replace(/\n{4,}/g,'\n\n\n').trim()
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized))
+  return [...new Uint8Array(digest)].map(x=>x.toString(16).padStart(2,'0')).join('')
+}
+
+function chunkText(text: string) {
+  const normalized = String(text || '').replace(/\r\n/g,'\n').replace(/\n{4,}/g,'\n\n\n').trim()
+  const out: string[] = []
+  const target=1350,overlap=180
+  let start=0
+  while(start<normalized.length && out.length<4200){
+    let end=Math.min(normalized.length,start+target)
+    if(end<normalized.length){
+      const boundary=Math.max(
+        normalized.lastIndexOf('\n\n',end),
+        normalized.lastIndexOf('. ',end),
+        normalized.lastIndexOf('\n',end)
+      )
+      if(boundary>start+650)end=boundary+(normalized[boundary]==='.'?1:0)
+    }
+    const part=normalized.slice(start,end).trim()
+    if(part)out.push(part)
+    if(end>=normalized.length)break
+    start=Math.max(start+1,end-overlap)
+  }
+  return out
+}
+
+function htmlToText(html: string) {
+  return String(html || '')
+    .replace(/<!--[\s\S]*?-->/g,' ')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi,' ')
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi,' ')
+    .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi,' ')
+    .replace(/<\/(p|div|section|article|header|footer|li|h[1-6]|tr|br)>/gi,'\n')
+    .replace(/<[^>]+>/g,' ')
+    .replace(/\S{500,}/g,' ')
+    .replace(/&nbsp;/gi,' ')
+    .replace(/&amp;/gi,'&')
+    .replace(/&lt;/gi,'<')
+    .replace(/&gt;/gi,'>')
+    .replace(/&quot;/gi,'"')
+    .replace(/&#39;/gi,"'")
+    .replace(/[ \t]+\n/g,'\n')
+    .replace(/\n{3,}/g,'\n\n')
+    .replace(/[ \t]{2,}/g,' ')
+    .trim()
+}
+
+function reconstructChunks(rows: Array<{chunk_index:number,content:string}>) {
+  let out=''
+  for(const row of rows.sort((a,b)=>Number(a.chunk_index)-Number(b.chunk_index))){
+    const part=String(row.content||'')
+    if(!out){out=part;continue}
+    let overlap=0
+    const max=Math.min(420,out.length,part.length)
+    for(let k=max;k>=32;k--){
+      if(out.endsWith(part.slice(0,k))){overlap=k;break}
+    }
+    out+=part.slice(overlap)
+  }
+  return out
+}
+
 function extractJson(text: string) {
   const clean = String(text || '').trim().replace(/^\x60\x60\x60json\s*/i, '').replace(/\x60\x60\x60$/i, '').trim()
   const start = clean.indexOf('{')
@@ -184,6 +250,56 @@ async function processMemoryBackfillBatch() {
   return Number(saved.data || rows.length)
 }
 
+async function processHtmlReprocess(job: QueueJob) {
+  const sourceId=String(job.message.source_id||'')
+  if(!sourceId){await archive(job.msg_id);return 'invalid HTML reprocess job'}
+
+  const source=await db.from('private_ai_knowledge_sources')
+    .select('id,title,char_count,metadata').eq('id',sourceId).maybeSingle()
+  if(source.error)throw source.error
+  if(!source.data){await finish(job.msg_id);return 'source deleted'}
+
+  const rows:any[]=[]
+  for(let from=0;;from+=1000){
+    const page=await db.from('private_ai_knowledge_chunks')
+      .select('chunk_index,content').eq('source_id',sourceId)
+      .order('chunk_index',{ascending:true}).range(from,from+999)
+    if(page.error)throw page.error
+    const batch=page.data||[]
+    rows.push(...batch)
+    if(batch.length<1000)break
+  }
+  if(!rows.length)throw new Error('HTML source has no chunks to rebuild')
+
+  const raw=reconstructChunks(rows)
+  const cleaned=htmlToText(raw)
+  if(cleaned.length<200)throw new Error('HTML cleanup found too little readable text')
+
+  const parts=chunkText(cleaned)
+  const payload=[]
+  for(let i=0;i<parts.length;i++){
+    payload.push({chunk_index:i,content:parts[i],content_hash:await contentHash(parts[i])})
+  }
+  const hash=await contentHash(cleaned)
+  const metadata={
+    ...(source.data.metadata||{}),
+    cleaned_html:true,
+    original_char_count:Number(source.data.char_count||raw.length),
+    cleaned_char_count:cleaned.length,
+    reprocessed_at:new Date().toISOString(),
+  }
+  const replaced=await db.rpc('private_ai_replace_knowledge_chunks',{
+    p_source_id:sourceId,
+    p_content_hash:hash,
+    p_char_count:cleaned.length,
+    p_chunks:payload,
+    p_metadata:metadata,
+  })
+  if(replaced.error)throw replaced.error
+  await finish(job.msg_id)
+  return 'HTML cleaned: '+String(rows.length)+' raw chunks -> '+String(replaced.data||parts.length)+' readable chunks'
+}
+
 async function processSummary(job: QueueJob) {
   const conversationId = String(job.message.conversation_id || '')
   const target = Number(job.message.target_message_count || 0)
@@ -292,6 +408,7 @@ async function processMemories(job: QueueJob) {
 async function processJob(job: QueueJob) {
   const type = String(job.message?.type || '')
   if (type === 'embed_knowledge_chunk') { await finish(job.msg_id); return 'legacy embedding job removed' }
+  if (type === 'reprocess_html_source') return processHtmlReprocess(job)
   if (type === 'summarize_conversation') return processSummary(job)
   if (type === 'extract_memories') return processMemories(job)
   await archive(job.msg_id)
