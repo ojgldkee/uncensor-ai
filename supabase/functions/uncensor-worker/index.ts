@@ -453,7 +453,7 @@ Deno.serve(async (req) => {
     results.push({ type:'memory_embedding_backfill', ok:false, error:message })
   }
 
-  const read = await db.rpc('private_ai_read_jobs', { qty: 2, visibility_seconds: 300 })
+  const read = await db.rpc('private_ai_read_jobs', { qty: 1, visibility_seconds: 300 })
   if (read.error) {
     if (!workerError) workerError = read.error.message
     results.push({ type:'queue_read', ok:false, error:read.error.message })
