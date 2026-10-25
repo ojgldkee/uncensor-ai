@@ -178,6 +178,31 @@ async function send(text){
 }
 
 function knowledgeCollection(x){return String((x.metadata&&x.metadata.collection)||'').trim();}
+function knowledgeLogicalSources(items){
+  const out=[],groups=new Map();
+  for(const x of items||[]){
+    const g=String((x.metadata&&x.metadata.file_group)||'');
+    if(!g){out.push(Object.assign({_items:[x]},x));continue;}
+    if(!groups.has(g))groups.set(g,[]);
+    groups.get(g).push(x);
+  }
+  for(const parts of groups.values()){
+    parts.sort((a,b)=>Number(a.metadata?.part||0)-Number(b.metadata?.part||0));
+    const first=parts[0],statuses=parts.map(x=>String(x.status||'queued'));
+    const status=statuses.includes('failed')?'failed':statuses.includes('processing')?'processing':statuses.includes('queued')?'queued':'ready';
+    out.push(Object.assign({},first,{
+      _items:parts,
+      _file_group:true,
+      status,
+      char_count:parts.reduce((n,x)=>n+Number(x.char_count||0),0),
+      chunk_count:parts.reduce((n,x)=>n+Number(x.chunk_count||0),0),
+      embedded_chunk_count:parts.reduce((n,x)=>n+Number(x.embedded_chunk_count||0),0),
+      enabled:parts.some(x=>x.enabled!==false),
+      last_error:parts.find(x=>x.last_error)?.last_error||null
+    }));
+  }
+  return out.sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0));
+}
 function switchKnowledgeTab(tab){
   const library=tab!=='add';
   $('knowledgeLibraryPanel').classList.toggle('hidden',!library);
@@ -191,11 +216,11 @@ function renderKnowledge(){
   const q=$('knowledgeSearch').value.trim().toLowerCase();
   const type=$('knowledgeTypeFilter').value;
   const statusFilter=$('knowledgeStatusFilter').value;
-  const all=state.knowledge||[];
+  const raw=state.knowledge||[],all=knowledgeLogicalSources(raw);
   $('knowledgeCount').textContent=all.length+' source'+(all.length===1?'':'s');
   $('knowledgeTotalSources').textContent=all.length.toLocaleString();
   $('knowledgeReadySources').textContent=all.filter(x=>x.status==='ready').length.toLocaleString();
-  $('knowledgeTotalChunks').textContent=all.reduce((n,x)=>n+Number(x.chunk_count||0),0).toLocaleString();
+  $('knowledgeTotalChunks').textContent=raw.reduce((n,x)=>n+Number(x.chunk_count||0),0).toLocaleString();
   const rows=all.filter(x=>{
     const collection=knowledgeCollection(x).toLowerCase();
     const matchesQ=!q||String(x.title||'').toLowerCase().includes(q)||collection.includes(q)||String(x.source_type||'').toLowerCase().includes(q);
@@ -211,11 +236,13 @@ function renderKnowledge(){
   rows.forEach(x=>{
     const total=Number(x.chunk_count||0),done=Number(x.embedded_chunk_count||0),pct=total?Math.round((done/total)*100):0,status=String(x.status||'queued'),collection=knowledgeCollection(x);
     const typeLabel=x.source_type==='website'?'Website':x.source_type==='file'?'File':'Notes';
+    const partCount=(x._items||[]).length;
     const el=document.createElement('div');el.className='knowledge-item knowledge-library-item'+(x.enabled===false?' disabled':'');
-    el.innerHTML='<div class="knowledge-item-main"><div class="knowledge-source-icon">'+(x.source_type==='website'?'↗':x.source_type==='file'?'▤':'✎')+'</div><div class="knowledge-source-copy"><div class="knowledge-source-title-row"><strong>'+esc(x.title||'Untitled')+'</strong>'+(collection?'<span class="knowledge-collection-chip">'+esc(collection)+'</span>':'')+'</div><small>'+typeLabel+' · '+Number(x.char_count||0).toLocaleString()+' chars · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks · '+esc(status)+'</small>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'</div></div><div class="knowledge-actions"><button class="toggle" title="'+(x.enabled===false?'Enable':'Disable')+'">'+(x.enabled===false?'○':'●')+'</button><button class="rename" title="Rename">✎</button><button class="delete danger-hover" title="Delete permanently">×</button></div>';
-    el.querySelector('.toggle').onclick=async()=>{await api('/api/knowledge/'+encodeURIComponent(x.id),{method:'PATCH',body:JSON.stringify({enabled:x.enabled===false})});loadKnowledge();};
-    el.querySelector('.rename').onclick=async()=>{const n=prompt('Rename knowledge source',x.title||'');if(n&&n.trim()){await api('/api/knowledge/'+encodeURIComponent(x.id),{method:'PATCH',body:JSON.stringify({title:n.trim().slice(0,160)})});loadKnowledge();}};
-    el.querySelector('.delete').onclick=async()=>{if(confirm('Permanently delete “'+x.title+'” and every indexed chunk?')){await api('/api/knowledge/'+encodeURIComponent(x.id),{method:'DELETE'});await loadKnowledge();toast('Knowledge source deleted');}};
+    el.innerHTML='<div class="knowledge-item-main"><div class="knowledge-source-icon">'+(x.source_type==='website'?'↗':x.source_type==='file'?'▤':'✎')+'</div><div class="knowledge-source-copy"><div class="knowledge-source-title-row"><strong>'+esc(x.title||'Untitled')+'</strong>'+(collection?'<span class="knowledge-collection-chip">'+esc(collection)+'</span>':'')+'</div><small>'+typeLabel+(partCount>1?' · '+partCount+' segments':'')+' · '+Number(x.char_count||0).toLocaleString()+' chars · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks · '+esc(status)+'</small>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'</div></div><div class="knowledge-actions"><button class="toggle" title="'+(x.enabled===false?'Enable':'Disable')+'">'+(x.enabled===false?'○':'●')+'</button><button class="rename" title="Rename">✎</button><button class="delete danger-hover" title="Delete permanently">×</button></div>';
+    const items=x._items||[x];
+    el.querySelector('.toggle').onclick=async()=>{const value=x.enabled===false;await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id),{method:'PATCH',body:JSON.stringify({enabled:value})})));loadKnowledge();};
+    el.querySelector('.rename').onclick=async()=>{const n=prompt('Rename knowledge source',x.title||'');if(n&&n.trim()){await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id),{method:'PATCH',body:JSON.stringify({title:n.trim().slice(0,160)})})));loadKnowledge();}};
+    el.querySelector('.delete').onclick=async()=>{if(confirm('Permanently delete “'+x.title+'”'+(partCount>1?' and all '+partCount+' segments':'')+'?')){await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id),{method:'DELETE'})));await loadKnowledge();toast('Knowledge source deleted');}};
     root.append(el);
   });
 }
@@ -245,7 +272,8 @@ async function importKnowledgeUrls(){
 }
 async function ingestOne(j){
   const collection=$('knowledgeCollection').value.trim().slice(0,80);
-  const d=await api('/api/knowledge',{method:'POST',body:JSON.stringify({title:j.title,text:j.text,source_type:j.type,metadata:{collection}})});
+  const metadata=Object.assign({},j.metadata||{},{collection});
+  const d=await api('/api/knowledge',{method:'POST',body:JSON.stringify({title:j.title,text:j.text,source_type:j.type,metadata})});
   if(d.duplicate)return{chunks:0,duplicate:true,title:(d.source&&d.source.title)||j.title};
   return{chunks:Number(d.chunk_count||0),duplicate:false,title:j.title};
 }
@@ -274,14 +302,43 @@ async function ingestTextKnowledge(){
   $('knowledgeText').value='';$('knowledgeTitleInput').value='';
 }
 async function ingestFileKnowledge(){
-  const files=[...$('knowledgeFile').files],jobs=[];
+  const files=[...$('knowledgeFile').files];
   if(!files.length){toast('Choose one or more files first.');return;}
-  for(const file of files){
-    if(file.size>5000000){toast(file.name+' is over the 5 MB text limit.');return;}
-    jobs.push({title:file.name,text:await file.text(),type:'file'});
-  }
-  await ingestJobs(jobs,$('saveKnowledgeFiles'));
-  $('knowledgeFile').value='';
+  const maxFileBytes=100*1024*1024;
+  const segmentBytes=3.5*1024*1024;
+  for(const file of files){if(file.size>maxFileBytes){toast(file.name+' is over the 100 MB per-file limit.',4500);return;}}
+  const btn=$('saveKnowledgeFiles');btn.disabled=true;
+  $('ingestProgress').classList.remove('hidden');$('ingestProgressBar').style.width='2%';
+  const totalBytes=files.reduce((n,f)=>n+f.size,0);let sentBytes=0,queued=0,duplicates=0,failed=0;
+  try{
+    for(let fileIndex=0;fileIndex<files.length;fileIndex++){
+      const file=files[fileIndex];
+      const parts=Math.max(1,Math.ceil(file.size/segmentBytes));
+      const group=(crypto.randomUUID?crypto.randomUUID():String(Date.now())+'-'+fileIndex);
+      for(let part=0;part<parts;part++){
+        const from=Math.floor(part*segmentBytes),to=Math.min(file.size,Math.floor((part+1)*segmentBytes));
+        $('ingestProgressText').textContent='Uploading '+file.name+(parts>1?' · segment '+(part+1)+'/'+parts:'')+'…';
+        try{
+          const text=await file.slice(from,to).text();
+          const r=await ingestOne({
+            title:file.name,
+            text,
+            type:'file',
+            metadata:{file_group:group,file_name:file.name,file_size:file.size,part:part+1,parts}
+          });
+          queued+=r.chunks;if(r.duplicate)duplicates++;
+        }catch(e){failed++;console.error('Knowledge file segment failed',file.name,part+1,e);}
+        sentBytes+=to-from;
+        $('ingestProgressBar').style.width=Math.max(3,Math.round((sentBytes/Math.max(totalBytes,1))*94))+'%';
+      }
+    }
+    $('ingestProgressBar').style.width='100%';
+    $('ingestProgressText').textContent=(queued?queued.toLocaleString()+' chunks queued. ':'')+(duplicates?duplicates+' duplicate segment'+(duplicates===1?'':'s')+' skipped. ':'')+(failed?failed+' segment'+(failed===1?'':'s')+' failed. ':'')+'Indexing continues in the background.';
+    $('knowledgeFile').value='';
+    await loadKnowledge();switchKnowledgeTab('library');
+    toast(failed?'Files added with '+failed+' failed segment'+(failed===1?'':'s'):'Files added to global Knowledge',4000);
+    setTimeout(()=>$('ingestProgress').classList.add('hidden'),3500);
+  }finally{btn.disabled=false;}
 }
 
 
