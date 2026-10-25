@@ -177,6 +177,47 @@ async function openRouterStream(model: string, messages: any[]) {
   throw new Error(last)
 }
 
+async function openRouterOnce(model: string, messages: any[]) {
+  const candidates = [model, ...FALLBACK_MODELS].filter((x, i, a) => x && a.indexOf(x) === i)
+  let last = 'No model provider succeeded'
+  for (const candidate of candidates) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer ' + OPENROUTER_KEY,
+            'content-type': 'application/json',
+            'X-Title': 'Uncensor AI',
+          },
+          body: JSON.stringify({
+            model: candidate,
+            stream: false,
+            usage: { include: true },
+            temperature: TEMPERATURE,
+            max_tokens: MAX_TOKENS,
+            messages,
+            provider: { allow_fallbacks: true },
+          }),
+          signal: AbortSignal.timeout(90000),
+        })
+        const raw = await res.json().catch(() => ({}))
+        if (res.ok) {
+          const content = raw?.choices?.[0]?.message?.content
+          if (typeof content !== 'string' || !content.trim()) throw new Error('Model returned an empty response')
+          return { content, usage: raw?.usage || null, model: candidate }
+        }
+        last = raw?.error?.message || ('OpenRouter ' + res.status)
+        if (![408, 409, 425, 429, 500, 502, 503, 504].includes(res.status)) break
+      } catch (e) {
+        last = e instanceof Error ? e.message : String(e)
+      }
+      if (attempt === 0) await new Promise(r => setTimeout(r, 650))
+    }
+  }
+  throw new Error(last)
+}
+
 async function chat(req: Request) {
   if (!OPENROUTER_KEY) return json({ setup_required: true, error: 'OpenRouter key is not configured in Supabase yet.' }, 503)
   const rate = await db.rpc('private_ai_take_rate_limit', { minute_limit: 12, day_limit: 400 })
@@ -222,16 +263,42 @@ async function chat(req: Request) {
   ].filter(Boolean).join('\n\n')
 
   const preferred = cleanModel(body?.model)
-  const upstream = await openRouterStream(preferred, [{ role: 'system', content: system }, ...recent])
-  const encoder = new TextEncoder()
-  const decoder = new TextDecoder()
-  let full = '', buffer = '', usage: any = null
+  const requestMessages = [{ role: 'system', content: system }, ...recent]
   const sourceMeta = (ctx.knowledge || []).slice(0, 10).map((k: any) => ({
     title: k.title,
     source_id: k.source_id,
     similarity: k.similarity,
   }))
 
+  if (body?.stream === false) {
+    const result = await openRouterOnce(preferred, requestMessages)
+    await saveMessage(conversationId, 'assistant', result.content, result.model, sourceMeta)
+    if (result.usage) {
+      await db.from('private_ai_usage').insert({
+        conversation_id: conversationId,
+        model: result.model,
+        operation: 'chat',
+        prompt_tokens: Number(result.usage.prompt_tokens || 0),
+        completion_tokens: Number(result.usage.completion_tokens || 0),
+        total_tokens: Number(result.usage.total_tokens || 0),
+        cost_usd: Number(result.usage.cost || 0),
+      })
+    }
+    return json({
+      ok: true,
+      conversation_id: conversationId,
+      title: conversation.title,
+      model: result.model,
+      content: result.content,
+      sources: sourceMeta,
+      memories_used: (ctx.memories || []).length,
+    })
+  }
+
+  const upstream = await openRouterStream(preferred, requestMessages)
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+  let full = '', buffer = '', usage: any = null, assistantSaved = false
   const stream = new ReadableStream({
     async start(controller) {
       controller.enqueue(encoder.encode('data: ' + JSON.stringify({
@@ -268,6 +335,7 @@ async function chat(req: Request) {
 
         if (full.trim()) {
           await saveMessage(conversationId, 'assistant', full, upstream.model, sourceMeta)
+          assistantSaved = true
         }
         if (usage) {
           await db.from('private_ai_usage').insert({
@@ -283,8 +351,11 @@ async function chat(req: Request) {
         controller.enqueue(encoder.encode('data: [DONE]\n\n'))
         controller.close()
       } catch (e) {
-        if (full.trim()) {
-          try { await saveMessage(conversationId, 'assistant', full + '\n\n[Response interrupted]', upstream.model, sourceMeta) } catch {}
+        if (full.trim() && !assistantSaved) {
+          try {
+            await saveMessage(conversationId, 'assistant', full + '\n\n[Response interrupted]', upstream.model, sourceMeta)
+            assistantSaved = true
+          } catch {}
         }
         controller.enqueue(encoder.encode('data: ' + JSON.stringify({ type: 'error', error: e instanceof Error ? e.message : 'Stream interrupted' }) + '\n\n'))
         controller.close()
