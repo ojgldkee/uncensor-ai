@@ -116,6 +116,52 @@ alter table public.private_ai_usage add column if not exists operation text not 
 create index if not exists private_ai_usage_created_idx on public.private_ai_usage(created_at desc);
 create index if not exists private_ai_usage_conversation_idx on public.private_ai_usage(conversation_id);
 
+
+create table if not exists public.private_ai_request_buckets (
+  window_type text not null check (window_type in ('minute','day')),
+  bucket_start timestamptz not null,
+  request_count integer not null default 0,
+  updated_at timestamptz not null default now(),
+  primary key (window_type, bucket_start)
+);
+alter table public.private_ai_request_buckets enable row level security;
+revoke all on table public.private_ai_request_buckets from anon, authenticated;
+grant select, insert, update, delete on table public.private_ai_request_buckets to service_role;
+
+create or replace function public.private_ai_take_rate_limit(
+  minute_limit integer default 12,
+  day_limit integer default 400
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = ''
+as $
+declare
+  minute_bucket timestamptz := date_trunc('minute', now());
+  day_bucket timestamptz := date_trunc('day', now());
+  minute_count integer;
+  day_count integer;
+begin
+  insert into public.private_ai_request_buckets(window_type,bucket_start,request_count,updated_at)
+  values ('minute',minute_bucket,1,now())
+  on conflict (window_type,bucket_start)
+  do update set request_count=public.private_ai_request_buckets.request_count+1, updated_at=now()
+  returning request_count into minute_count;
+
+  insert into public.private_ai_request_buckets(window_type,bucket_start,request_count,updated_at)
+  values ('day',day_bucket,1,now())
+  on conflict (window_type,bucket_start)
+  do update set request_count=public.private_ai_request_buckets.request_count+1, updated_at=now()
+  returning request_count into day_count;
+
+  return minute_count <= greatest(minute_limit,1)
+     and day_count <= greatest(day_limit,1);
+end;
+$;
+revoke all on function public.private_ai_take_rate_limit(integer,integer) from public,anon,authenticated;
+grant execute on function public.private_ai_take_rate_limit(integer,integer) to service_role;
+
 create table if not exists public.private_ai_runtime_config (
   id boolean primary key default true check (id),
   project_url text,
