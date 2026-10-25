@@ -119,9 +119,17 @@ create table if not exists public.private_ai_runtime_config (
   worker_token text,
   access_token_hash text,
   summary_trigger_messages integer not null default 24,
-  memory_trigger_messages integer not null default 8,
+  memory_trigger_messages integer not null default 6,
+  last_worker_run_at timestamptz,
+  last_worker_success_at timestamptz,
+  last_worker_error text,
+  backend_version text not null default 'v3',
   updated_at timestamptz not null default now()
 );
+alter table public.private_ai_runtime_config add column if not exists last_worker_run_at timestamptz;
+alter table public.private_ai_runtime_config add column if not exists last_worker_success_at timestamptz;
+alter table public.private_ai_runtime_config add column if not exists last_worker_error text;
+alter table public.private_ai_runtime_config add column if not exists backend_version text not null default 'v3';
 insert into public.private_ai_runtime_config(id) values (true) on conflict (id) do nothing;
 
 alter table public.private_ai_conversations enable row level security;
