@@ -443,3 +443,13 @@ select cron.schedule(
   '15 seconds',
   $$ select public.private_ai_dispatch_worker(); $$
 );
+
+
+-- Private attachment storage for chat media. Provisioned by migration so the API never
+-- needs to create infrastructure dynamically at request time.
+insert into storage.buckets (id,name,public,file_size_limit)
+values ('private-ai-attachments','private-ai-attachments',false,104857600)
+on conflict (id) do update
+set public=false,
+    file_size_limit=104857600,
+    updated_at=now();
