@@ -84,3 +84,7 @@ Knowledge ingestion uses Supabase embeddings rather than OpenRouter, so importin
 Text is split into overlapping chunks, stored first, then embedded in resumable batches. This is deliberately designed for long transcripts and course material so one timeout does not discard the whole import.
 
 Current direct file support is text-based: TXT, Markdown, CSV, JSON, HTML, logs, code, SQL, CSS, and other browser-readable text files. PDF/DOCX extraction is the next ingestion upgrade rather than pretending binary documents are plain text.
+
+## Product roadmap
+
+See [ROADMAP.md](./ROADMAP.md) for the 14-step reliability and capability roadmap. AI-generated courses are intentionally not part of the plan.
