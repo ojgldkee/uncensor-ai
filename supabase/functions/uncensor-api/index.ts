@@ -16,8 +16,9 @@ const DAILY_CAP = Math.max(0, Number(Deno.env.get('DAILY_SPEND_LIMIT_USD') || '1
 const MAX_TOKENS = Math.max(512, Math.min(16000, Number(Deno.env.get('MAX_COMPLETION_TOKENS') || '5000')))
 const TEMPERATURE = Math.max(0, Math.min(2, Number(Deno.env.get('TEMPERATURE') || '0.62')))
 
+const APP_ORIGIN = Deno.env.get('APP_ORIGIN') || 'https://ojgldkee.github.io'
 const CORS = {
-  'access-control-allow-origin': '*',
+  'access-control-allow-origin': APP_ORIGIN,
   'access-control-allow-headers': 'content-type,x-uncensor-key',
   'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS',
 }
@@ -178,6 +179,9 @@ async function openRouterStream(model: string, messages: any[]) {
 
 async function chat(req: Request) {
   if (!OPENROUTER_KEY) return json({ setup_required: true, error: 'OpenRouter key is not configured in Supabase yet.' }, 503)
+  const rate = await db.rpc('private_ai_take_rate_limit', { minute_limit: 12, day_limit: 400 })
+  if (rate.error) return json({ error: 'Rate limiter unavailable.' }, 503)
+  if (rate.data !== true) return json({ error: 'Request limit reached. Try again shortly.', rate_limited: true }, 429)
   const spend = await rollingSpend()
   if (DAILY_CAP > 0 && spend >= DAILY_CAP) return json({ error: 'Rolling 24-hour spend cap reached.', spent: spend, cap: DAILY_CAP }, 429)
 
@@ -403,6 +407,8 @@ async function statusRoute() {
 }
 
 Deno.serve(async (req) => {
+  const origin = req.headers.get('origin')
+  if (origin && origin !== APP_ORIGIN) return json({ error: 'Origin not allowed' }, 403)
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS })
   const path = pathOf(req)
 
