@@ -12,8 +12,8 @@
     .hidden{display:none!important}
     #app{min-height:100dvh}
   </style>
-  <link rel="manifest" href="./manifest.webmanifest?v=9" />
-  <link rel="stylesheet" href="./styles.css?v=9" />
+  <link rel="manifest" href="./manifest.webmanifest?v=10" />
+  <link rel="stylesheet" href="./styles.css?v=10" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -207,7 +207,7 @@
             <h3>Text files</h3>
             <p>Upload multiple text, Markdown, CSV, JSON, HTML, or code files.</p>
             <input id="knowledgeFile" type="file" multiple accept=".txt,.md,.csv,.json,.html,.htm,.log,.js,.ts,.tsx,.jsx,.py,.sql,.css,text/*,application/json" />
-            <small>Up to about 5 MB of extracted text per source. PDF/DOCX/PPTX ingestion is the next file-processing upgrade.</small>
+            <small>Large text/HTML/code files are automatically segmented and indexed as one logical source. Up to 100 MB per file. PDF/DOCX/PPTX extraction is the next file-processing upgrade.</small>
             <button id="saveKnowledgeFiles" class="secondary-btn">Add selected files</button>
           </div>
         </div>
@@ -254,7 +254,7 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="./config.js?v=9"></script>
-  <script src="./app.js?v=9" defer></script>
+  <script src="./config.js?v=10"></script>
+  <script src="./app.js?v=10" defer></script>
 </body>
 </html>
