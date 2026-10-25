@@ -261,6 +261,8 @@ Deno.serve(async (req) => {
   if (cfg.error) return json({ error: cfg.error.message }, 500)
   if (!cfg.data?.worker_token || token !== cfg.data.worker_token) return json({ error: 'Unauthorized' }, 401)
 
+  await db.from('private_ai_runtime_config').update({ last_worker_run_at: new Date().toISOString(), last_worker_error: null, updated_at: new Date().toISOString() }).eq('id', true)
+
   const read = await db.rpc('private_ai_read_jobs', { qty: 8, visibility_seconds: 180 })
   if (read.error) return json({ error: read.error.message }, 500)
   const jobs = (read.data || []) as QueueJob[]
@@ -284,12 +286,20 @@ Deno.serve(async (req) => {
           }).eq('id', sourceId)
         } catch {}
       }
-      if (job.read_ct >= 8) {
+      const providerMissing = message.includes('OPENROUTER_API_KEY')
+      if (job.read_ct >= 8 && !providerMissing) {
         try { await archive(job.msg_id) } catch {}
       }
       results.push({ id: job.msg_id, type: job.message?.type, ok: false, error: message, retry: job.read_ct < 8 })
     }
   }
+
+  const failed = results.filter((r: any) => !r.ok)
+  await db.from('private_ai_runtime_config').update({
+    last_worker_success_at: new Date().toISOString(),
+    last_worker_error: failed.length ? String(failed[0].error || '').slice(0, 2000) : null,
+    updated_at: new Date().toISOString(),
+  }).eq('id', true)
 
   return json({ ok: true, processed: jobs.length, results })
 })
