@@ -24,7 +24,7 @@ async function openChat(id){state.activeId=id;try{const d=await api('/api/conver
 async function patchChat(id,p){try{await api('/api/conversations/'+encodeURIComponent(id),{method:'PATCH',body:JSON.stringify(p)});await loadChats();}catch(e){toast(e.message);}}
 async function renameChat(id=state.activeId,current=activeTitle()){if(!id)return;const n=prompt('Rename this chat',current||'');if(n==null||!n.trim())return;await patchChat(id,{title:n.trim().slice(0,120)});if(id===state.activeId){state.activeConversation=Object.assign({},state.activeConversation||{},{title:n.trim().slice(0,120)});header();}}
 async function deleteChat(id=state.activeId,title=activeTitle()){if(!id)return;if(!confirm('Permanently delete “'+(title||'this chat')+'”?\\n\\nEvery saved message in it will be deleted and this cannot be undone.'))return;try{await api('/api/conversations/'+encodeURIComponent(id),{method:'DELETE'});if(state.activeId===id)newChat(false);await loadChats();toast('Chat permanently deleted');}catch(e){toast(e.message);}}
-function newChat(close=true){if(state.sending&&state.abort)state.abort.abort();state.activeId=null;state.activeConversation=null;state.messages=[];renderMessages();renderConversations();header();$('input').focus();if(close)closeSidebar();}
+function newChat(close=true){if(state.sending&&state.abort)state.abort.abort();clearPendingAttachments();state.activeId=null;state.activeConversation=null;state.messages=[];renderMessages();renderConversations();header();$('input').focus();if(close)closeSidebar();}
 
 function fileKind(file){
   const type=String(file.type||'').toLowerCase(),name=String(file.name||'').toLowerCase();
@@ -44,7 +44,7 @@ function renderAttachmentTray(){
   state.pendingAttachments.forEach((a,i)=>{
     const el=document.createElement('div');el.className='attachment-pill';
     el.innerHTML='<span class="att-icon">'+attIcon(a.kind)+'</span><span class="att-copy"><strong>'+esc(a.name||a.url||'Attachment')+'</strong><small>'+esc(a.kind)+(a.size?' · '+formatBytes(a.size):'')+'</small></span><button type="button" aria-label="Remove">×</button>';
-    el.querySelector('button').onclick=()=>{state.pendingAttachments.splice(i,1);renderAttachmentTray();};
+    el.querySelector('button').onclick=()=>{const removed=state.pendingAttachments.splice(i,1)[0];renderAttachmentTray();if(removed&&removed.path)api('/api/uploads/discard',{method:'POST',body:JSON.stringify({path:removed.path})}).catch(()=>{});};
     tray.append(el);
   });
 }
@@ -180,6 +180,26 @@ async function send(text){
 function renderKnowledge(){const root=$('knowledgeList');root.innerHTML='';const q=$('knowledgeSearch').value.trim().toLowerCase();const rows=state.knowledge.filter(x=>!q||String(x.title||'').toLowerCase().includes(q));$('knowledgeCount').textContent=state.knowledge.length+' source'+(state.knowledge.length===1?'':'s');if(!rows.length){root.innerHTML='<div class="empty-list">'+(q?'No matching sources.':'Nothing saved yet.')+'</div>';return;}rows.forEach(x=>{const total=Number(x.chunk_count||0),done=Number(x.embedded_chunk_count||0),pct=total?Math.round((done/total)*100):0,status=String(x.status||'queued');const el=document.createElement('div');el.className='knowledge-item'+(x.enabled===false?' disabled':'');el.innerHTML='<div class="knowledge-item-head"><div><strong>'+esc(x.title||'Untitled')+'</strong><small>'+Number(x.char_count||0).toLocaleString()+' chars · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks indexed · '+esc(status)+'</small>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'</div><div class="knowledge-actions"><button class="toggle">'+(x.enabled===false?'○':'●')+'</button><button class="rename">✎</button><button class="delete danger-hover">×</button></div></div>';el.querySelector('.toggle').onclick=async()=>{await api('/api/knowledge/'+encodeURIComponent(x.id),{method:'PATCH',body:JSON.stringify({enabled:x.enabled===false})});loadKnowledge();};el.querySelector('.rename').onclick=async()=>{const n=prompt('Rename knowledge source',x.title||'');if(n&&n.trim()){await api('/api/knowledge/'+encodeURIComponent(x.id),{method:'PATCH',body:JSON.stringify({title:n.trim().slice(0,160)})});loadKnowledge();}};el.querySelector('.delete').onclick=async()=>{if(confirm('Permanently delete “'+x.title+'” and every indexed chunk?')){await api('/api/knowledge/'+encodeURIComponent(x.id),{method:'DELETE'});await loadKnowledge();toast('Knowledge source deleted');}};root.append(el);});}
 
 async function loadKnowledge(){try{const d=await api('/api/knowledge');state.knowledge=d.sources||[];renderKnowledge();}catch(e){$('knowledgeList').innerHTML='<div class="error-list">'+esc(e.message)+'</div>';$('knowledgeCount').textContent='Not configured';}}
+async function importKnowledgeUrls(){
+  const raw=$('knowledgeUrls').value.trim();if(!raw)return;
+  const urls=[...new Set(raw.split(/\s+/).filter(Boolean))].slice(0,20);
+  if(!urls.length)return;
+  const btn=$('importKnowledgeUrls');btn.disabled=true;
+  let added=0,duplicates=0,failed=0;
+  try{
+    for(let i=0;i<urls.length;i++){
+      $('knowledgeUrlStatus').textContent='Importing '+(i+1)+' / '+urls.length+'…';
+      try{
+        const d=await api('/api/knowledge/url',{method:'POST',body:JSON.stringify({url:urls[i]})});
+        if(d.duplicate)duplicates++;else added++;
+      }catch{failed++;}
+    }
+    $('knowledgeUrls').value='';
+    $('knowledgeUrlStatus').textContent=added+' page'+(added===1?'':'s')+' queued'+(duplicates?' · '+duplicates+' duplicate'+(duplicates===1?'':'s')+' skipped':'')+(failed?' · '+failed+' failed':'')+'. Background indexing will continue if you close the tab.';
+    await loadKnowledge();
+    toast(added?'Web knowledge queued':'Website import finished',3500);
+  }finally{btn.disabled=false;}
+}
 async function ingestOne(j){const d=await api('/api/knowledge',{method:'POST',body:JSON.stringify({title:j.title,text:j.text,source_type:j.type})});if(d.duplicate)return{chunks:0,duplicate:true,title:(d.source&&d.source.title)||j.title};return{chunks:Number(d.chunk_count||0),duplicate:false,title:j.title};}
 async function ingest(){const pasted=$('knowledgeText').value.trim(),files=[...$('knowledgeFile').files],jobs=[];if(pasted)jobs.push({title:$('knowledgeTitleInput').value.trim()||'Pasted knowledge',text:pasted,type:'paste'});for(const f of files){if(f.size>5000000){toast(f.name+' is over the 5 MB text limit.');return;}jobs.push({title:f.name,text:await f.text(),type:'file'});}if(!jobs.length){toast('Paste text or choose one or more files.');return;}const btn=$('saveKnowledge');btn.disabled=true;$('ingestProgress').classList.remove('hidden');$('ingestProgressBar').style.width='15%';let queued=0,duplicates=0;try{for(let i=0;i<jobs.length;i++){$('ingestProgressText').textContent='Queueing '+(i+1)+' / '+jobs.length+': '+jobs[i].title;const r=await ingestOne(jobs[i]);queued+=r.chunks;if(r.duplicate)duplicates++;$('ingestProgressBar').style.width=Math.round(((i+1)/jobs.length)*90)+'%';}$('ingestProgressBar').style.width='100%';$('ingestProgressText').textContent=(queued?queued.toLocaleString()+' chunks queued for background indexing. ':'')+(duplicates?duplicates+' duplicate source'+(duplicates===1?'':'s')+' skipped.':'')+' You can close this tab.';$('knowledgeText').value='';$('knowledgeTitleInput').value='';$('knowledgeFile').value='';await loadKnowledge();toast(duplicates&&duplicates===jobs.length?'Already in your knowledge library':'Knowledge queued — safe to close the tab',3500);setTimeout(()=>$('ingestProgress').classList.add('hidden'),3000);}catch(e){toast(e.message,4000);$('ingestProgress').classList.add('hidden');}finally{btn.disabled=false;}}
 
@@ -210,7 +230,7 @@ $('videoInput').onchange=e=>addFiles(e.target.files);
 $('addWebsiteAttachment').onclick=addWebsiteAttachment;
 $('websiteUrlInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();addWebsiteAttachment();}};
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));document.querySelectorAll('.modal').forEach(m=>m.onclick=e=>{if(e.target===m)closeModal(m.id);});
-$('saveKnowledge').onclick=ingest;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
+$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingest;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
 $('knowledgeToggle').onclick=()=>{state.knowledgeEnabled=!state.knowledgeEnabled;localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));syncSettings();};
 $('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);
 $('saveSettings').onclick=()=>{state.knowledgeEnabled=$('settingKnowledge').checked;state.showSources=$('settingSources').checked;state.mode=$('responseMode').value;state.style=$('stylePrompt').value.trim()||DEFAULT_STYLE;const k=$('accessKeyInput').value.trim();if(k)localStorage.setItem('uncensor.accessKey',k);else localStorage.removeItem('uncensor.accessKey');localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));localStorage.setItem('uncensor.sources',String(state.showSources));localStorage.setItem('uncensor.mode',state.mode);localStorage.setItem('uncensor.style',state.style);syncSettings();closeModal('settingsModal');renderMessages();toast('Settings saved');loadChats();loadKnowledge();loadMemories();status();};
