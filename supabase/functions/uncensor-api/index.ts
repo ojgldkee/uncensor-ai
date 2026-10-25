@@ -642,12 +642,19 @@ async function createKnowledgeRecord(title: string, text: string, sourceType = '
 
 async function knowledgeCreate(req: Request) {
   const body = await req.json().catch(() => ({}))
-  return createKnowledgeRecord(
-    String(body?.title || 'Untitled'),
-    String(body?.text || ''),
-    String(body?.source_type || 'paste'),
-    body?.metadata || {}
-  )
+  const title=String(body?.title || 'Untitled')
+  const sourceType=String(body?.source_type || 'paste')
+  const metadata=body?.metadata || {}
+  let text=String(body?.text || '')
+  const isHtml=sourceType==='file' && (/\.html?$/i.test(title) || /\.html?$/i.test(String(metadata?.file_name || '')))
+  if(isHtml){
+    const before=text.length
+    text=htmlToText(text)
+    metadata.cleaned_html=true
+    metadata.raw_segment_chars=before
+    metadata.cleaned_segment_chars=text.length
+  }
+  return createKnowledgeRecord(title,text,sourceType,metadata)
 }
 
 async function knowledgeUrlCreate(req: Request) {
