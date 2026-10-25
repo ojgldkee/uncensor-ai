@@ -1,0 +1,295 @@
+import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
+import { createClient } from 'npm:@supabase/supabase-js@2'
+
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || ''
+const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+const OPENROUTER_KEY = Deno.env.get('OPENROUTER_API_KEY') || ''
+const SUMMARY_MODEL = Deno.env.get('OPENROUTER_SUMMARY_MODEL') || 'z-ai/glm-5.3-flash'
+const db = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } })
+const embedder = new Supabase.ai.Session('gte-small')
+
+type QueueJob = {
+  msg_id: number
+  read_ct: number
+  enqueued_at: string
+  vt: string
+  message: Record<string, unknown>
+}
+
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+
+async function embedding(text: string) {
+  const out = await embedder.run(text.slice(0, 7000), { mean_pool: true, normalize: true })
+  if (!Array.isArray(out) || out.length !== 384) throw new Error('Embedding returned an unexpected vector')
+  return out
+}
+
+function extractJson(text: string) {
+  const clean = String(text || '').trim().replace(/^\x60\x60\x60json\s*/i, '').replace(/\x60\x60\x60$/i, '').trim()
+  const start = clean.indexOf('{')
+  if (start < 0) throw new Error('Model returned no JSON object')
+  let depth = 0, quoted = false, escaped = false
+  for (let i = start; i < clean.length; i++) {
+    const ch = clean[i]
+    if (quoted) {
+      if (escaped) { escaped = false; continue }
+      if (ch === '\\') { escaped = true; continue }
+      if (ch === '"') quoted = false
+      continue
+    }
+    if (ch === '"') { quoted = true; continue }
+    if (ch === '{') depth++
+    if (ch === '}') {
+      depth--
+      if (depth === 0) return JSON.parse(clean.slice(start, i + 1))
+    }
+  }
+  throw new Error('Model returned incomplete JSON')
+}
+
+async function llm(system: string, user: string, operation: string, conversationId?: string) {
+  if (!OPENROUTER_KEY) throw new Error('OPENROUTER_API_KEY is not configured for background memory/summaries')
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer ' + OPENROUTER_KEY,
+      'content-type': 'application/json',
+      'X-Title': 'Uncensor AI Background Worker',
+    },
+    body: JSON.stringify({
+      model: SUMMARY_MODEL,
+      temperature: 0.15,
+      max_tokens: 2600,
+      response_format: { type: 'json_object' },
+      usage: { include: true },
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      provider: { allow_fallbacks: true },
+    }),
+    signal: AbortSignal.timeout(55000),
+  })
+  const raw = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(raw?.error?.message || ('OpenRouter ' + res.status))
+  const content = raw?.choices?.[0]?.message?.content
+  if (typeof content !== 'string' || !content.trim()) throw new Error('Background model returned an empty response')
+  const usage = raw?.usage || null
+  if (usage) {
+    try {
+      await db.from('private_ai_usage').insert({
+        conversation_id: conversationId || null,
+        model: SUMMARY_MODEL,
+        operation,
+        prompt_tokens: Number(usage.prompt_tokens || 0),
+        completion_tokens: Number(usage.completion_tokens || 0),
+        total_tokens: Number(usage.total_tokens || 0),
+        cost_usd: Number(usage.cost || 0),
+      })
+    } catch {}
+  }
+  return extractJson(content)
+}
+
+async function finish(jobId: number) {
+  const { error } = await db.rpc('private_ai_delete_job', { job_id: jobId })
+  if (error) throw error
+}
+
+async function archive(jobId: number) {
+  await db.rpc('private_ai_archive_job', { job_id: jobId })
+}
+
+async function processKnowledge(job: QueueJob) {
+  const chunkId = Number(job.message.chunk_id || 0)
+  const sourceId = String(job.message.source_id || '')
+  if (!chunkId || !sourceId) { await archive(job.msg_id); return 'invalid knowledge job' }
+
+  const { data: chunk, error } = await db.from('private_ai_knowledge_chunks')
+    .select('id,source_id,content,embedding').eq('id', chunkId).maybeSingle()
+  if (error) throw error
+  if (!chunk) { await finish(job.msg_id); return 'chunk already deleted' }
+  if (chunk.embedding) { await finish(job.msg_id); return 'already embedded' }
+
+  const vector = await embedding(String(chunk.content || ''))
+  const update = await db.from('private_ai_knowledge_chunks').update({ embedding: vector }).eq('id', chunkId)
+  if (update.error) throw update.error
+
+  const count = await db.from('private_ai_knowledge_chunks')
+    .select('id', { count: 'exact', head: true }).eq('source_id', sourceId).not('embedding', 'is', null)
+  if (count.error) throw count.error
+  const source = await db.from('private_ai_knowledge_sources').select('chunk_count').eq('id', sourceId).maybeSingle()
+  if (source.error) throw source.error
+
+  const embedded = Number(count.count || 0)
+  const total = Number(source.data?.chunk_count || 0)
+  const ready = total > 0 && embedded >= total
+  const su = await db.from('private_ai_knowledge_sources').update({
+    embedded_chunk_count: embedded,
+    status: ready ? 'ready' : 'processing',
+    completed_at: ready ? new Date().toISOString() : null,
+    last_error: null,
+    updated_at: new Date().toISOString(),
+  }).eq('id', sourceId)
+  if (su.error) throw su.error
+
+  await finish(job.msg_id)
+  return ready ? 'source ready' : 'chunk embedded'
+}
+
+async function processSummary(job: QueueJob) {
+  const conversationId = String(job.message.conversation_id || '')
+  const target = Number(job.message.target_message_count || 0)
+  if (!conversationId || !target) { await archive(job.msg_id); return 'invalid summary job' }
+
+  const conv = await db.from('private_ai_conversations')
+    .select('id,title,rolling_summary,summary_through_message_count,total_message_count,summary_version')
+    .eq('id', conversationId).maybeSingle()
+  if (conv.error) throw conv.error
+  if (!conv.data) { await finish(job.msg_id); return 'conversation deleted' }
+
+  const through = Number(conv.data.summary_through_message_count || 0)
+  const actualTarget = Math.min(target, Number(conv.data.total_message_count || target))
+  if (actualTarget <= through) { await finish(job.msg_id); return 'summary already current' }
+
+  const msgs = await db.from('private_ai_messages')
+    .select('role,content,created_at').eq('conversation_id', conversationId)
+    .order('created_at', { ascending: true })
+    .range(through, Math.max(through, actualTarget - 1))
+  if (msgs.error) throw msgs.error
+
+  const transcript = (msgs.data || []).map((m: any, i: number) =>
+    String(through + i + 1) + '. ' + String(m.role).toUpperCase() + ': ' + String(m.content).slice(0, 18000)
+  ).join('\n\n')
+
+  const result = await llm(
+    'Maintain a rolling conversation summary for a personal AI. Return JSON only: {"summary":"..."}. Preserve user goals, decisions, preferences, definitions, commitments, important facts, unresolved questions, prior advice that later context depends on, and changes of mind. Drop greetings, repetition, filler, transient wording, and details that do not help future continuity. Never invent facts. Write a compact but information-dense summary that another AI can use as prior context.',
+    'CHAT TITLE: ' + String(conv.data.title || 'Untitled') +
+      '\n\nPREVIOUS ROLLING SUMMARY:\n' + String(conv.data.rolling_summary || '(none)') +
+      '\n\nNEW MESSAGES TO INCORPORATE:\n' + transcript,
+    'summary',
+    conversationId,
+  )
+
+  const summary = String(result.summary || '').trim()
+  if (!summary) throw new Error('Summary model returned no summary')
+
+  const saved = await db.from('private_ai_conversations').update({
+    rolling_summary: summary,
+    summary_through_message_count: actualTarget,
+    summary_version: Number(conv.data.summary_version || 0) + 1,
+    summary_updated_at: new Date().toISOString(),
+  }).eq('id', conversationId)
+  if (saved.error) throw saved.error
+
+  await finish(job.msg_id)
+  return 'summarized through ' + String(actualTarget)
+}
+
+async function processMemories(job: QueueJob) {
+  const conversationId = String(job.message.conversation_id || '')
+  if (!conversationId) { await archive(job.msg_id); return 'invalid memory job' }
+
+  const conv = await db.from('private_ai_conversations')
+    .select('title,rolling_summary').eq('id', conversationId).maybeSingle()
+  if (conv.error) throw conv.error
+  if (!conv.data) { await finish(job.msg_id); return 'conversation deleted' }
+
+  const recent = await db.from('private_ai_messages')
+    .select('id,role,content,created_at').eq('conversation_id', conversationId)
+    .order('created_at', { ascending: false }).limit(18)
+  if (recent.error) throw recent.error
+  const rows = (recent.data || []).reverse()
+  if (!rows.length) { await finish(job.msg_id); return 'no messages' }
+
+  const transcript = rows.map((m: any) =>
+    String(m.role).toUpperCase() + ': ' + String(m.content).slice(0, 12000)
+  ).join('\n\n')
+
+  const result = await llm(
+    'Extract durable personal memory for a private AI assistant. Return JSON only with shape {"memories":[{"memory_key":"stable_snake_case_key","content":"concise factual memory","category":"preference|goal|project|decision|routine|relationship|background|instruction|other","importance":1-10,"confidence":0-1}]}. Only store information the user explicitly supplied or clearly confirmed. Store things likely to matter in future conversations, not every detail. Include ongoing projects, durable preferences, goals, repeated routines, decisions, and standing instructions. Do not infer sensitive traits. Never store passwords, API keys, authentication codes, full account/card numbers, or other credentials. If a newer statement contradicts an older one, use the newer confirmed statement. Use the same memory_key for the same underlying fact so it updates instead of duplicating. Return at most 10 memories. Return an empty array if nothing is durable.',
+    'CHAT: ' + String(conv.data.title || 'Untitled') +
+      '\nROLLING CONTEXT:\n' + String(conv.data.rolling_summary || '(none)') +
+      '\n\nRECENT MESSAGES:\n' + transcript,
+    'memory',
+    conversationId,
+  )
+
+  const memories = Array.isArray(result.memories) ? result.memories.slice(0, 10) : []
+  for (const m of memories) {
+    const key = String(m?.memory_key || '').toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 120)
+    const content = String(m?.content || '').trim().slice(0, 4000)
+    if (!key || !content) continue
+    const vector = await embedding(content)
+    const latestUserMessage = [...rows].reverse().find((r: any) => r.role === 'user')
+    const row = {
+      memory_key: key,
+      content,
+      category: String(m?.category || 'other').slice(0, 40),
+      importance: Math.max(1, Math.min(10, Number(m?.importance || 5))),
+      confidence: Math.max(0, Math.min(1, Number(m?.confidence ?? 0.8))),
+      active: true,
+      source_conversation_id: conversationId,
+      source_message_id: latestUserMessage?.id || null,
+      embedding: vector,
+      updated_at: new Date().toISOString(),
+    }
+    const saved = await db.from('private_ai_memories').upsert(row, { onConflict: 'memory_key' })
+    if (saved.error) throw saved.error
+  }
+
+  await finish(job.msg_id)
+  return 'memory extraction: ' + String(memories.length)
+}
+
+async function processJob(job: QueueJob) {
+  const type = String(job.message?.type || '')
+  if (type === 'embed_knowledge_chunk') return processKnowledge(job)
+  if (type === 'summarize_conversation') return processSummary(job)
+  if (type === 'extract_memories') return processMemories(job)
+  await archive(job.msg_id)
+  return 'unknown job archived'
+}
+
+Deno.serve(async (req) => {
+  if (req.method !== 'POST') return json({ error: 'POST required' }, 405)
+  const token = req.headers.get('x-worker-token') || ''
+  if (!token) return json({ error: 'Worker token required' }, 401)
+
+  const cfg = await db.from('private_ai_runtime_config').select('worker_token').eq('id', true).maybeSingle()
+  if (cfg.error) return json({ error: cfg.error.message }, 500)
+  if (!cfg.data?.worker_token || token !== cfg.data.worker_token) return json({ error: 'Unauthorized' }, 401)
+
+  const read = await db.rpc('private_ai_read_jobs', { qty: 8, visibility_seconds: 180 })
+  if (read.error) return json({ error: read.error.message }, 500)
+  const jobs = (read.data || []) as QueueJob[]
+  const results: any[] = []
+
+  for (const job of jobs) {
+    try {
+      const detail = await processJob(job)
+      results.push({ id: job.msg_id, type: job.message?.type, ok: true, detail })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error('uncensor-worker job failed', { id: job.msg_id, type: job.message?.type, read_ct: job.read_ct, error: message })
+      const sourceId = String(job.message?.source_id || '')
+      if (sourceId) {
+        try {
+          await db.from('private_ai_knowledge_sources').update({
+            status: job.read_ct >= 8 ? 'failed' : 'processing',
+            last_error: message.slice(0, 2000),
+            failure_count: job.read_ct,
+            updated_at: new Date().toISOString(),
+          }).eq('id', sourceId)
+        } catch {}
+      }
+      if (job.read_ct >= 8) {
+        try { await archive(job.msg_id) } catch {}
+      }
+      results.push({ id: job.msg_id, type: job.message?.type, ok: false, error: message, retry: job.read_ct < 8 })
+    }
+  }
+
+  return json({ ok: true, processed: jobs.length, results })
+})
