@@ -1,0 +1,18 @@
+name = "uncensor-ai"
+main = "_worker.js"
+compatibility_date = "2026-10-25"
+
+[assets]
+directory = "."
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+[vars]
+OPENROUTER_ENABLED = "false"
+APP_NAME = "Uncensor AI"
+DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash-1017"
+ALLOWED_MODELS = "deepseek/deepseek-v4.1-flash-1017,moonshotai/kimi-k3.1-pro,z-ai/glm-5.3-flash,qwen/qwen3.8-27b"
+DAILY_SPEND_LIMIT_USD = "1.00"
+RAG_TOP_K = "10"
+MAX_COMPLETION_TOKENS = "5000"
+TEMPERATURE = "0.62"
