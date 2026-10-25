@@ -177,11 +177,53 @@ async function send(text){
   }
 }
 
-function renderKnowledge(){const root=$('knowledgeList');root.innerHTML='';const q=$('knowledgeSearch').value.trim().toLowerCase();const rows=state.knowledge.filter(x=>!q||String(x.title||'').toLowerCase().includes(q));$('knowledgeCount').textContent=state.knowledge.length+' source'+(state.knowledge.length===1?'':'s');if(!rows.length){root.innerHTML='<div class="empty-list">'+(q?'No matching sources.':'Nothing saved yet.')+'</div>';return;}rows.forEach(x=>{const total=Number(x.chunk_count||0),done=Number(x.embedded_chunk_count||0),pct=total?Math.round((done/total)*100):0,status=String(x.status||'queued');const el=document.createElement('div');el.className='knowledge-item'+(x.enabled===false?' disabled':'');el.innerHTML='<div class="knowledge-item-head"><div><strong>'+esc(x.title||'Untitled')+'</strong><small>'+Number(x.char_count||0).toLocaleString()+' chars · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks indexed · '+esc(status)+'</small>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'</div><div class="knowledge-actions"><button class="toggle">'+(x.enabled===false?'○':'●')+'</button><button class="rename">✎</button><button class="delete danger-hover">×</button></div></div>';el.querySelector('.toggle').onclick=async()=>{await api('/api/knowledge/'+encodeURIComponent(x.id),{method:'PATCH',body:JSON.stringify({enabled:x.enabled===false})});loadKnowledge();};el.querySelector('.rename').onclick=async()=>{const n=prompt('Rename knowledge source',x.title||'');if(n&&n.trim()){await api('/api/knowledge/'+encodeURIComponent(x.id),{method:'PATCH',body:JSON.stringify({title:n.trim().slice(0,160)})});loadKnowledge();}};el.querySelector('.delete').onclick=async()=>{if(confirm('Permanently delete “'+x.title+'” and every indexed chunk?')){await api('/api/knowledge/'+encodeURIComponent(x.id),{method:'DELETE'});await loadKnowledge();toast('Knowledge source deleted');}};root.append(el);});}
+function knowledgeCollection(x){return String((x.metadata&&x.metadata.collection)||'').trim();}
+function switchKnowledgeTab(tab){
+  const library=tab!=='add';
+  $('knowledgeLibraryPanel').classList.toggle('hidden',!library);
+  $('knowledgeAddPanel').classList.toggle('hidden',library);
+  $('knowledgeLibraryTab').classList.toggle('active',library);
+  $('knowledgeAddTab').classList.toggle('active',!library);
+  if(library){loadKnowledge();setTimeout(()=>$('knowledgeSearch').focus(),40);}
+}
+function renderKnowledge(){
+  const root=$('knowledgeList');root.innerHTML='';
+  const q=$('knowledgeSearch').value.trim().toLowerCase();
+  const type=$('knowledgeTypeFilter').value;
+  const statusFilter=$('knowledgeStatusFilter').value;
+  const all=state.knowledge||[];
+  $('knowledgeCount').textContent=all.length+' source'+(all.length===1?'':'s');
+  $('knowledgeTotalSources').textContent=all.length.toLocaleString();
+  $('knowledgeReadySources').textContent=all.filter(x=>x.status==='ready').length.toLocaleString();
+  $('knowledgeTotalChunks').textContent=all.reduce((n,x)=>n+Number(x.chunk_count||0),0).toLocaleString();
+  const rows=all.filter(x=>{
+    const collection=knowledgeCollection(x).toLowerCase();
+    const matchesQ=!q||String(x.title||'').toLowerCase().includes(q)||collection.includes(q)||String(x.source_type||'').toLowerCase().includes(q);
+    const matchesType=type==='all'||String(x.source_type||'')===type;
+    const matchesStatus=statusFilter==='all'||String(x.status||'')===statusFilter;
+    return matchesQ&&matchesType&&matchesStatus;
+  });
+  if(!rows.length){
+    root.innerHTML='<div class="knowledge-empty"><div class="knowledge-empty-icon">▤</div><strong>'+(all.length?'No matching sources':'Your global knowledge library is empty')+'</strong><p>'+(all.length?'Try a different search or filter.':'Add websites, notes, transcripts, or files. They will be available from every chat.')+'</p>'+(all.length?'':'<button id="emptyAddKnowledge" class="primary-btn">＋ Add your first source</button>')+'</div>';
+    const b=$('emptyAddKnowledge');if(b)b.onclick=()=>switchKnowledgeTab('add');
+    return;
+  }
+  rows.forEach(x=>{
+    const total=Number(x.chunk_count||0),done=Number(x.embedded_chunk_count||0),pct=total?Math.round((done/total)*100):0,status=String(x.status||'queued'),collection=knowledgeCollection(x);
+    const typeLabel=x.source_type==='website'?'Website':x.source_type==='file'?'File':'Notes';
+    const el=document.createElement('div');el.className='knowledge-item knowledge-library-item'+(x.enabled===false?' disabled':'');
+    el.innerHTML='<div class="knowledge-item-main"><div class="knowledge-source-icon">'+(x.source_type==='website'?'↗':x.source_type==='file'?'▤':'✎')+'</div><div class="knowledge-source-copy"><div class="knowledge-source-title-row"><strong>'+esc(x.title||'Untitled')+'</strong>'+(collection?'<span class="knowledge-collection-chip">'+esc(collection)+'</span>':'')+'</div><small>'+typeLabel+' · '+Number(x.char_count||0).toLocaleString()+' chars · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks · '+esc(status)+'</small>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'</div></div><div class="knowledge-actions"><button class="toggle" title="'+(x.enabled===false?'Enable':'Disable')+'">'+(x.enabled===false?'○':'●')+'</button><button class="rename" title="Rename">✎</button><button class="delete danger-hover" title="Delete permanently">×</button></div>';
+    el.querySelector('.toggle').onclick=async()=>{await api('/api/knowledge/'+encodeURIComponent(x.id),{method:'PATCH',body:JSON.stringify({enabled:x.enabled===false})});loadKnowledge();};
+    el.querySelector('.rename').onclick=async()=>{const n=prompt('Rename knowledge source',x.title||'');if(n&&n.trim()){await api('/api/knowledge/'+encodeURIComponent(x.id),{method:'PATCH',body:JSON.stringify({title:n.trim().slice(0,160)})});loadKnowledge();}};
+    el.querySelector('.delete').onclick=async()=>{if(confirm('Permanently delete “'+x.title+'” and every indexed chunk?')){await api('/api/knowledge/'+encodeURIComponent(x.id),{method:'DELETE'});await loadKnowledge();toast('Knowledge source deleted');}};
+    root.append(el);
+  });
+}
 
 async function loadKnowledge(){try{const d=await api('/api/knowledge');state.knowledge=d.sources||[];renderKnowledge();}catch(e){$('knowledgeList').innerHTML='<div class="error-list">'+esc(e.message)+'</div>';$('knowledgeCount').textContent='Not configured';}}
 async function importKnowledgeUrls(){
   const raw=$('knowledgeUrls').value.trim();if(!raw)return;
+  const collection=$('knowledgeCollection').value.trim().slice(0,80);
   const urls=[...new Set(raw.split(/\s+/).filter(Boolean))].slice(0,20);
   if(!urls.length)return;
   const btn=$('importKnowledgeUrls');btn.disabled=true;
@@ -190,24 +232,64 @@ async function importKnowledgeUrls(){
     for(let i=0;i<urls.length;i++){
       $('knowledgeUrlStatus').textContent='Importing '+(i+1)+' / '+urls.length+'…';
       try{
-        const d=await api('/api/knowledge/url',{method:'POST',body:JSON.stringify({url:urls[i]})});
+        const d=await api('/api/knowledge/url',{method:'POST',body:JSON.stringify({url:urls[i],collection})});
         if(d.duplicate)duplicates++;else added++;
       }catch{failed++;}
     }
     $('knowledgeUrls').value='';
-    $('knowledgeUrlStatus').textContent=added+' page'+(added===1?'':'s')+' queued'+(duplicates?' · '+duplicates+' duplicate'+(duplicates===1?'':'s')+' skipped':'')+(failed?' · '+failed+' failed':'')+'. Background indexing will continue if you close the tab.';
+    $('knowledgeUrlStatus').textContent=added+' page'+(added===1?'':'s')+' queued'+(duplicates?' · '+duplicates+' duplicate'+(duplicates===1?'':'s')+' skipped':'')+(failed?' · '+failed+' failed':'')+'. You can close the tab while indexing continues.';
     await loadKnowledge();
-    toast(added?'Web knowledge queued':'Website import finished',3500);
+    if(added)switchKnowledgeTab('library');
+    toast(added?'Web knowledge added':'Website import finished',3500);
   }finally{btn.disabled=false;}
 }
-async function ingestOne(j){const d=await api('/api/knowledge',{method:'POST',body:JSON.stringify({title:j.title,text:j.text,source_type:j.type})});if(d.duplicate)return{chunks:0,duplicate:true,title:(d.source&&d.source.title)||j.title};return{chunks:Number(d.chunk_count||0),duplicate:false,title:j.title};}
-async function ingest(){const pasted=$('knowledgeText').value.trim(),files=[...$('knowledgeFile').files],jobs=[];if(pasted)jobs.push({title:$('knowledgeTitleInput').value.trim()||'Pasted knowledge',text:pasted,type:'paste'});for(const f of files){if(f.size>5000000){toast(f.name+' is over the 5 MB text limit.');return;}jobs.push({title:f.name,text:await f.text(),type:'file'});}if(!jobs.length){toast('Paste text or choose one or more files.');return;}const btn=$('saveKnowledge');btn.disabled=true;$('ingestProgress').classList.remove('hidden');$('ingestProgressBar').style.width='15%';let queued=0,duplicates=0;try{for(let i=0;i<jobs.length;i++){$('ingestProgressText').textContent='Queueing '+(i+1)+' / '+jobs.length+': '+jobs[i].title;const r=await ingestOne(jobs[i]);queued+=r.chunks;if(r.duplicate)duplicates++;$('ingestProgressBar').style.width=Math.round(((i+1)/jobs.length)*90)+'%';}$('ingestProgressBar').style.width='100%';$('ingestProgressText').textContent=(queued?queued.toLocaleString()+' chunks queued for background indexing. ':'')+(duplicates?duplicates+' duplicate source'+(duplicates===1?'':'s')+' skipped.':'')+' You can close this tab.';$('knowledgeText').value='';$('knowledgeTitleInput').value='';$('knowledgeFile').value='';await loadKnowledge();toast(duplicates&&duplicates===jobs.length?'Already in your knowledge library':'Knowledge queued — safe to close the tab',3500);setTimeout(()=>$('ingestProgress').classList.add('hidden'),3000);}catch(e){toast(e.message,4000);$('ingestProgress').classList.add('hidden');}finally{btn.disabled=false;}}
+async function ingestOne(j){
+  const collection=$('knowledgeCollection').value.trim().slice(0,80);
+  const d=await api('/api/knowledge',{method:'POST',body:JSON.stringify({title:j.title,text:j.text,source_type:j.type,metadata:{collection}})});
+  if(d.duplicate)return{chunks:0,duplicate:true,title:(d.source&&d.source.title)||j.title};
+  return{chunks:Number(d.chunk_count||0),duplicate:false,title:j.title};
+}
+async function ingestJobs(jobs,button){
+  if(!jobs.length){toast('Nothing selected to add.');return;}
+  button.disabled=true;$('ingestProgress').classList.remove('hidden');$('ingestProgressBar').style.width='15%';
+  let queued=0,duplicates=0;
+  try{
+    for(let i=0;i<jobs.length;i++){
+      $('ingestProgressText').textContent='Queueing '+(i+1)+' / '+jobs.length+': '+jobs[i].title;
+      const r=await ingestOne(jobs[i]);queued+=r.chunks;if(r.duplicate)duplicates++;
+      $('ingestProgressBar').style.width=Math.round(((i+1)/jobs.length)*90)+'%';
+    }
+    $('ingestProgressBar').style.width='100%';
+    $('ingestProgressText').textContent=(queued?queued.toLocaleString()+' chunks queued. ':'')+(duplicates?duplicates+' duplicate source'+(duplicates===1?'':'s')+' skipped. ':'')+'Indexing continues in the background.';
+    await loadKnowledge();switchKnowledgeTab('library');
+    toast(duplicates&&duplicates===jobs.length?'Already in your library':'Added to global Knowledge',3500);
+    setTimeout(()=>$('ingestProgress').classList.add('hidden'),3000);
+  }catch(e){toast(e.message,4000);$('ingestProgress').classList.add('hidden');}
+  finally{button.disabled=false;}
+}
+async function ingestTextKnowledge(){
+  const pasted=$('knowledgeText').value.trim();if(!pasted){toast('Paste something first.');return;}
+  const title=$('knowledgeTitleInput').value.trim()||'Pasted knowledge';
+  await ingestJobs([{title,text:pasted,type:'paste'}],$('saveKnowledge'));
+  $('knowledgeText').value='';$('knowledgeTitleInput').value='';
+}
+async function ingestFileKnowledge(){
+  const files=[...$('knowledgeFile').files],jobs=[];
+  if(!files.length){toast('Choose one or more files first.');return;}
+  for(const file of files){
+    if(file.size>5000000){toast(file.name+' is over the 5 MB text limit.');return;}
+    jobs.push({title:file.name,text:await file.text(),type:'file'});
+  }
+  await ingestJobs(jobs,$('saveKnowledgeFiles'));
+  $('knowledgeFile').value='';
+}
+
 
 function renderMemories(){const root=$('memoryList');root.innerHTML='';const q=$('memorySearch').value.trim().toLowerCase();const rows=state.memories.filter(m=>!q||String(m.content||'').toLowerCase().includes(q)||String(m.category||'').toLowerCase().includes(q));$('memoryCount').textContent=state.memories.length+' memor'+(state.memories.length===1?'y':'ies');if(!rows.length){root.innerHTML='<div class="empty-list">'+(q?'No matching memories.':'No durable memories yet. The AI will build these automatically from chats.')+'</div>';return;}rows.forEach(m=>{const el=document.createElement('div');el.className='knowledge-item'+(m.active===false?' disabled':'');el.innerHTML='<div class="knowledge-item-head"><div><strong>'+esc(m.category||'memory')+(m.pinned?' · pinned':'')+'</strong><small style="line-height:1.45">'+esc(m.content||'')+'</small><small>importance '+Number(m.importance||5)+'/10 · '+Math.round(Number(m.confidence||0)*100)+'% confidence</small></div><div class="knowledge-actions"><button class="pin">'+(m.pinned?'★':'☆')+'</button><button class="toggle">'+(m.active===false?'○':'●')+'</button><button class="rename">✎</button><button class="delete danger-hover">×</button></div></div>';el.querySelector('.pin').onclick=async()=>{await api('/api/memories/'+encodeURIComponent(m.id),{method:'PATCH',body:JSON.stringify({pinned:!m.pinned})});loadMemories();};el.querySelector('.toggle').onclick=async()=>{await api('/api/memories/'+encodeURIComponent(m.id),{method:'PATCH',body:JSON.stringify({active:m.active===false})});loadMemories();};el.querySelector('.rename').onclick=async()=>{const n=prompt('Edit this memory',m.content||'');if(n&&n.trim()){await api('/api/memories/'+encodeURIComponent(m.id),{method:'PATCH',body:JSON.stringify({content:n.trim().slice(0,4000)})});loadMemories();}};el.querySelector('.delete').onclick=async()=>{if(confirm('Permanently delete this memory?')){await api('/api/memories/'+encodeURIComponent(m.id),{method:'DELETE'});await loadMemories();toast('Memory deleted');}};root.append(el);});}
 async function loadMemories(){try{const d=await api('/api/memories');state.memories=d.memories||[];renderMemories();}catch(e){state.memories=[];$('memoryCount').textContent='Memory unavailable';if($('memoryList'))$('memoryList').innerHTML='<div class="error-list">'+esc(e.message)+'</div>';}}
 
 function exportChat(){if(!state.messages.length)return;const title=activeTitle(),body=['# '+title,''].concat(state.messages.flatMap(m=>['## '+(m.role==='user'?'You':'Assistant'),'',m.content||'',''])).join('\\n');const a=document.createElement('a'),blob=new Blob([body],{type:'text/markdown'});a.href=URL.createObjectURL(blob);a.download=(title.replace(/[^a-z0-9-_]+/gi,'-')||'chat')+'.md';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),500);}
-function openModal(id){$(id).classList.remove('hidden');if(id==='knowledgeModal')loadKnowledge();if(id==='memoryModal')loadMemories();}
+function openModal(id){$(id).classList.remove('hidden');if(id==='knowledgeModal'){switchKnowledgeTab('library');loadKnowledge();}if(id==='memoryModal')loadMemories();}
 function closeModal(id){$(id).classList.add('hidden');}
 function openSidebar(){$('sidebar').classList.add('open');$('backdrop').classList.add('show');}
 function closeSidebar(){$('sidebar').classList.remove('open');$('backdrop').classList.remove('show');}
@@ -223,14 +305,14 @@ $('attachPhoto').onclick=()=>{$('photoInput').value='';$('photoInput').click();}
 $('attachFile').onclick=()=>{$('fileInput').value='';$('fileInput').click();};
 $('attachVideo').onclick=()=>{$('videoInput').value='';$('videoInput').click();};
 $('attachWebsite').onclick=()=>{closeModal('attachSheet');openModal('websiteModal');setTimeout(()=>$('websiteUrlInput').focus(),50);};
-$('attachKnowledge').onclick=()=>{closeModal('attachSheet');openModal('knowledgeModal');};
+$('attachKnowledge').onclick=()=>{closeModal('attachSheet');openModal('knowledgeModal');switchKnowledgeTab('add');};
 $('photoInput').onchange=e=>addFiles(e.target.files);
 $('fileInput').onchange=e=>addFiles(e.target.files);
 $('videoInput').onchange=e=>addFiles(e.target.files);
 $('addWebsiteAttachment').onclick=addWebsiteAttachment;
 $('websiteUrlInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();addWebsiteAttachment();}};
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));document.querySelectorAll('.modal').forEach(m=>m.onclick=e=>{if(e.target===m)closeModal(m.id);});
-$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingest;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
+$('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
 $('knowledgeToggle').onclick=()=>{state.knowledgeEnabled=!state.knowledgeEnabled;localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));syncSettings();};
 $('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);
 $('saveSettings').onclick=()=>{state.knowledgeEnabled=$('settingKnowledge').checked;state.showSources=$('settingSources').checked;state.mode=$('responseMode').value;state.style=$('stylePrompt').value.trim()||DEFAULT_STYLE;const k=$('accessKeyInput').value.trim();if(k)localStorage.setItem('uncensor.accessKey',k);else localStorage.removeItem('uncensor.accessKey');localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));localStorage.setItem('uncensor.sources',String(state.showSources));localStorage.setItem('uncensor.mode',state.mode);localStorage.setItem('uncensor.style',state.style);syncSettings();closeModal('settingsModal');renderMessages();toast('Settings saved');loadChats();loadKnowledge();loadMemories();status();};
