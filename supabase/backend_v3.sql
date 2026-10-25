@@ -57,6 +57,8 @@ create table if not exists public.private_ai_memories (
   unique(memory_key)
 );
 create index if not exists private_ai_memories_active_idx on public.private_ai_memories(active, pinned desc, importance desc, updated_at desc);
+create index if not exists private_ai_memories_conversation_idx on public.private_ai_memories(source_conversation_id);
+create index if not exists private_ai_memories_message_idx on public.private_ai_memories(source_message_id);
 create index if not exists private_ai_memories_hnsw_idx on public.private_ai_memories using hnsw (embedding vector_cosine_ops);
 
 create table if not exists public.private_ai_knowledge_sources (
@@ -112,6 +114,7 @@ create table if not exists public.private_ai_usage (
 );
 alter table public.private_ai_usage add column if not exists operation text not null default 'chat';
 create index if not exists private_ai_usage_created_idx on public.private_ai_usage(created_at desc);
+create index if not exists private_ai_usage_conversation_idx on public.private_ai_usage(conversation_id);
 
 create table if not exists public.private_ai_runtime_config (
   id boolean primary key default true check (id),
@@ -141,6 +144,22 @@ alter table public.private_ai_usage enable row level security;
 alter table public.private_ai_runtime_config enable row level security;
 
 -- These tables are server-side only. No anon/authenticated policies are intentionally created.
+revoke all on table public.private_ai_conversations from anon, authenticated;
+revoke all on table public.private_ai_messages from anon, authenticated;
+revoke all on table public.private_ai_memories from anon, authenticated;
+revoke all on table public.private_ai_knowledge_sources from anon, authenticated;
+revoke all on table public.private_ai_knowledge_chunks from anon, authenticated;
+revoke all on table public.private_ai_usage from anon, authenticated;
+revoke all on table public.private_ai_runtime_config from anon, authenticated;
+
+grant select, insert, update, delete on table public.private_ai_conversations to service_role;
+grant select, insert, update, delete on table public.private_ai_messages to service_role;
+grant select, insert, update, delete on table public.private_ai_memories to service_role;
+grant select, insert, update, delete on table public.private_ai_knowledge_sources to service_role;
+grant select, insert, update, delete on table public.private_ai_knowledge_chunks to service_role;
+grant select, insert, update, delete on table public.private_ai_usage to service_role;
+grant select, insert, update, delete on table public.private_ai_runtime_config to service_role;
+grant usage, select on all sequences in schema public to service_role;
 
 create or replace function public.private_ai_match_chunks(
   query_embedding extensions.vector(384),
@@ -250,7 +269,7 @@ security definer
 set search_path = ''
 as $$
   select coalesce(
-    encode(digest(candidate,'sha256'),'hex') =
+    encode(extensions.digest(candidate,'sha256'),'hex') =
       (select access_token_hash from public.private_ai_runtime_config where id=true),
     false
   );
@@ -331,6 +350,8 @@ revoke all on function public.private_ai_read_jobs(integer,integer) from public,
 revoke all on function public.private_ai_delete_job(bigint) from public,anon,authenticated;
 revoke all on function public.private_ai_archive_job(bigint) from public,anon,authenticated;
 revoke all on function public.private_ai_validate_access_token(text) from public,anon,authenticated;
+revoke all on function public.private_ai_after_message() from public,anon,authenticated;
+revoke all on function public.private_ai_after_knowledge_chunk() from public,anon,authenticated;
 grant execute on function public.private_ai_match_chunks(extensions.vector,integer,double precision) to service_role;
 grant execute on function public.private_ai_match_memories(extensions.vector,integer,double precision) to service_role;
 grant execute on function public.private_ai_enqueue_job(jsonb) to service_role;
