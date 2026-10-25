@@ -301,36 +301,58 @@ async function ingestTextKnowledge(){
   await ingestJobs([{title,text:pasted,type:'paste'}],$('saveKnowledge'));
   $('knowledgeText').value='';$('knowledgeTitleInput').value='';
 }
+function cleanHtmlClient(raw){
+  try{
+    const doc=new DOMParser().parseFromString(raw,'text/html');
+    doc.querySelectorAll('script,style,noscript,svg,canvas,iframe,link,meta,picture,source').forEach(n=>n.remove());
+    return String(doc.body?.innerText||doc.body?.textContent||doc.documentElement?.textContent||'')
+      .replace(/\S{500,}/g,' ')
+      .replace(/[ \t]+\n/g,'\n')
+      .replace(/\n{3,}/g,'\n\n')
+      .replace(/[ \t]{2,}/g,' ')
+      .trim();
+  }catch{return raw;}
+}
 async function ingestFileKnowledge(){
   const files=[...$('knowledgeFile').files];
   if(!files.length){toast('Choose one or more files first.');return;}
   const maxFileBytes=100*1024*1024;
-  const segmentBytes=3.5*1024*1024;
+  const segmentChars=3.5*1024*1024;
   for(const file of files){if(file.size>maxFileBytes){toast(file.name+' is over the 100 MB per-file limit.',4500);return;}}
   const btn=$('saveKnowledgeFiles');btn.disabled=true;
   $('ingestProgress').classList.remove('hidden');$('ingestProgressBar').style.width='2%';
-  const totalBytes=files.reduce((n,f)=>n+f.size,0);let sentBytes=0,queued=0,duplicates=0,failed=0;
+  const totalBytes=files.reduce((n,f)=>n+f.size,0);let processedBytes=0,queued=0,duplicates=0,failed=0;
   try{
     for(let fileIndex=0;fileIndex<files.length;fileIndex++){
       const file=files[fileIndex];
-      const parts=Math.max(1,Math.ceil(file.size/segmentBytes));
+      const html=/\.html?$/i.test(file.name);
+      let cleanedText=null;
+      if(html && file.size<=25*1024*1024){
+        $('ingestProgressText').textContent='Cleaning '+file.name+'…';
+        cleanedText=cleanHtmlClient(await file.text());
+      }
+      const totalUnits=cleanedText!==null?cleanedText.length:file.size;
+      const parts=Math.max(1,Math.ceil(totalUnits/segmentChars));
       const group=(crypto.randomUUID?crypto.randomUUID():String(Date.now())+'-'+fileIndex);
       for(let part=0;part<parts;part++){
-        const from=Math.floor(part*segmentBytes),to=Math.min(file.size,Math.floor((part+1)*segmentBytes));
-        $('ingestProgressText').textContent='Uploading '+file.name+(parts>1?' · segment '+(part+1)+'/'+parts:'')+'…';
+        const from=Math.floor(part*segmentChars),to=Math.min(totalUnits,Math.floor((part+1)*segmentChars));
+        $('ingestProgressText').textContent='Adding '+file.name+(parts>1?' · segment '+(part+1)+'/'+parts:'')+'…';
         try{
-          const text=await file.slice(from,to).text();
+          const text=cleanedText!==null?cleanedText.slice(from,to):await file.slice(from,to).text();
           const r=await ingestOne({
             title:file.name,
             text,
             type:'file',
-            metadata:{file_group:group,file_name:file.name,file_size:file.size,part:part+1,parts}
+            metadata:{
+              file_group:group,file_name:file.name,file_size:file.size,
+              part:part+1,parts,cleaned_html:html&&cleanedText!==null
+            }
           });
           queued+=r.chunks;if(r.duplicate)duplicates++;
         }catch(e){failed++;console.error('Knowledge file segment failed',file.name,part+1,e);}
-        sentBytes+=to-from;
-        $('ingestProgressBar').style.width=Math.max(3,Math.round((sentBytes/Math.max(totalBytes,1))*94))+'%';
       }
+      processedBytes+=file.size;
+      $('ingestProgressBar').style.width=Math.max(3,Math.round((processedBytes/Math.max(totalBytes,1))*94))+'%';
     }
     $('ingestProgressBar').style.width='100%';
     $('ingestProgressText').textContent=(queued?queued.toLocaleString()+' chunks queued. ':'')+(duplicates?duplicates+' duplicate segment'+(duplicates===1?'':'s')+' skipped. ':'')+(failed?failed+' segment'+(failed===1?'':'s')+' failed. ':'')+'Indexing continues in the background.';
