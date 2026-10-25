@@ -1,6 +1,6 @@
 const $=id=>document.getElementById(id);
 const DEFAULT_STYLE='Be direct, specific, intellectually curious, and nonjudgmental. Do not avoid a topic merely because it is controversial, sensitive, adult, or unconventional. Correct false premises, distinguish facts from uncertainty, and give useful specifics. If the exact request cannot be fulfilled, give the closest useful answer instead of boilerplate.';
-const state={conversations:[],activeId:null,activeConversation:null,messages:[],knowledge:[],memories:[],pendingAttachments:[],sending:false,abort:null,knowledgeEnabled:localStorage.getItem('uncensor.knowledge')!=='false',showSources:localStorage.getItem('uncensor.sources')!=='false',mode:localStorage.getItem('uncensor.mode')||'direct',style:localStorage.getItem('uncensor.style')||DEFAULT_STYLE};
+const state={conversations:[],activeId:null,activeConversation:null,messages:[],knowledge:[],memories:[],pendingAttachments:[],knowledgeFileUploads:[],knowledgePollTimer:null,sending:false,abort:null,knowledgeEnabled:localStorage.getItem('uncensor.knowledge')!=='false',showSources:localStorage.getItem('uncensor.sources')!=='false',mode:localStorage.getItem('uncensor.mode')||'direct',style:localStorage.getItem('uncensor.style')||DEFAULT_STYLE};
 
 function esc(v){return String(v||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
 function md(v){let s=esc(v);s=s.replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h1>$1</h1>');s=s.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>');return s.split(/\n{2,}/).map(p=>/^<h\d/.test(p)?p:'<p>'+p.replace(/\n/g,'<br>')+'</p>').join('');}
@@ -247,7 +247,75 @@ function renderKnowledge(){
   });
 }
 
-async function loadKnowledge(){try{const d=await api('/api/knowledge');state.knowledge=d.sources||[];renderKnowledge();}catch(e){$('knowledgeList').innerHTML='<div class="error-list">'+esc(e.message)+'</div>';$('knowledgeCount').textContent='Not configured';}}
+function formatBytes(n){n=Number(n||0);if(n<1024)return n+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';return (n/1048576).toFixed(n<10485760?1:0)+' MB';}
+function renderKnowledgeFileQueue(){
+  const root=$('knowledgeFileQueue'),rows=state.knowledgeFileUploads||[];
+  if(!rows.length){root.classList.add('hidden');root.innerHTML='';return;}
+  root.classList.remove('hidden');
+  const ready=rows.filter(r=>r.status==='ready').length;
+  const duplicates=rows.filter(r=>r.status==='duplicate').length;
+  const failed=rows.filter(r=>r.status==='failed').length;
+  const working=rows.length-ready-duplicates-failed;
+  root.innerHTML='<div class="knowledge-upload-summary"><strong>Upload activity</strong><span>'+ready+' ready'+(duplicates?' · '+duplicates+' duplicate'+(duplicates===1?'':'s')+' blocked':'')+(working?' · '+working+' working':'')+(failed?' · '+failed+' failed':'')+'</span></div>';
+  rows.forEach(r=>{
+    const el=document.createElement('div');el.className='knowledge-upload-row';
+    el.innerHTML='<div class="knowledge-upload-top"><div class="knowledge-upload-name">'+esc(r.name)+'</div><div class="knowledge-upload-state '+esc(r.status)+'">'+esc(r.label||r.status)+'</div></div><div class="knowledge-upload-meta"><span>'+formatBytes(r.size)+'</span><span>'+esc(r.detail||'')+'</span></div><div class="knowledge-upload-bar"><span style="width:'+Math.max(0,Math.min(100,Number(r.pct||0)))+'%"></span></div>';
+    root.append(el);
+  });
+}
+function setKnowledgeFileStatus(row,status,pct,detail,label){
+  row.status=status;row.pct=Math.max(0,Math.min(100,Number(pct||0)));row.detail=detail||'';row.label=label||status;
+  renderKnowledgeFileQueue();
+  const rows=state.knowledgeFileUploads||[];
+  if(rows.length){
+    const avg=Math.round(rows.reduce((n,r)=>n+Number(r.pct||0),0)/rows.length);
+    $('ingestProgressBar').style.width=avg+'%';
+    const done=rows.filter(r=>['ready','duplicate','failed'].includes(r.status)).length;
+    $('ingestProgressText').textContent=done+' / '+rows.length+' files finished'+(rows.some(r=>r.status==='duplicate')?' · duplicates blocked':'');
+  }
+}
+function updateKnowledgeUploadRows(){
+  const rows=state.knowledgeFileUploads||[];
+  if(!rows.length)return;
+  for(const row of rows){
+    if(!row.sourceIds?.length || ['duplicate','failed','ready'].includes(row.status))continue;
+    const items=(state.knowledge||[]).filter(x=>row.sourceIds.includes(x.id));
+    if(!items.length)continue;
+    const total=items.reduce((n,x)=>n+Number(x.chunk_count||0),0);
+    const done=items.reduce((n,x)=>n+Number(x.embedded_chunk_count||0),0);
+    const hasError=items.find(x=>x.status==='failed'||x.last_error);
+    if(hasError){setKnowledgeFileStatus(row,'failed',100,hasError.last_error||'Indexing failed','failed');continue;}
+    if(items.length===row.sourceIds.length && items.every(x=>x.status==='ready')){
+      setKnowledgeFileStatus(row,'ready',100,total+' / '+total+' chunks indexed','ready');
+    }else{
+      const pct=70+(total?Math.round((done/total)*30):0);
+      setKnowledgeFileStatus(row,'indexing',pct,done+' / '+total+' chunks indexed','indexing');
+    }
+  }
+}
+function scheduleKnowledgePoll(){
+  if(state.knowledgePollTimer){clearTimeout(state.knowledgePollTimer);state.knowledgePollTimer=null;}
+  const open=!$('knowledgeModal').classList.contains('hidden');
+  const working=(state.knowledge||[]).some(x=>!['ready','failed'].includes(String(x.status||''))) ||
+    (state.knowledgeFileUploads||[]).some(x=>!['ready','duplicate','failed','selected'].includes(x.status));
+  if(open&&working)state.knowledgePollTimer=setTimeout(()=>loadKnowledge(),2000);
+}
+async function sha256File(file){
+  const buffer=await file.arrayBuffer();
+  const digest=await crypto.subtle.digest('SHA-256',buffer);
+  return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+function stageKnowledgeFiles(files){
+  state.knowledgeFileUploads=[...files].map((file,i)=>({id:String(Date.now())+'-'+i,name:file.name,size:file.size,status:'selected',label:'selected',pct:0,detail:'Ready to add',sourceIds:[]}));
+  renderKnowledgeFileQueue();
+}
+async function loadKnowledge(){
+  try{
+    const d=await api('/api/knowledge');state.knowledge=d.sources||[];renderKnowledge();updateKnowledgeUploadRows();scheduleKnowledgePoll();
+  }catch(e){
+    $('knowledgeList').innerHTML='<div class="error-list">'+esc(e.message)+'</div>';$('knowledgeCount').textContent='Not configured';
+  }
+}
 async function importKnowledgeUrls(){
   const raw=$('knowledgeUrls').value.trim();if(!raw)return;
   const collection=$('knowledgeCollection').value.trim().slice(0,80);
@@ -274,8 +342,8 @@ async function ingestOne(j){
   const collection=$('knowledgeCollection').value.trim().slice(0,80);
   const metadata=Object.assign({},j.metadata||{},{collection});
   const d=await api('/api/knowledge',{method:'POST',body:JSON.stringify({title:j.title,text:j.text,source_type:j.type,metadata})});
-  if(d.duplicate)return{chunks:0,duplicate:true,title:(d.source&&d.source.title)||j.title};
-  return{chunks:Number(d.chunk_count||0),duplicate:false,title:j.title};
+  if(d.duplicate)return{chunks:0,duplicate:true,duplicateReason:d.duplicate_reason||'content',sourceId:d.source?.id||null,title:(d.source&&d.source.title)||j.title};
+  return{chunks:Number(d.chunk_count||0),duplicate:false,sourceId:d.source_id||null,title:j.title};
 }
 async function ingestJobs(jobs,button){
   if(!jobs.length){toast('Nothing selected to add.');return;}
@@ -320,47 +388,71 @@ async function ingestFileKnowledge(){
   const segmentChars=3.5*1024*1024;
   for(const file of files){if(file.size>maxFileBytes){toast(file.name+' is over the 100 MB per-file limit.',4500);return;}}
   const btn=$('saveKnowledgeFiles');btn.disabled=true;
-  $('ingestProgress').classList.remove('hidden');$('ingestProgressBar').style.width='2%';
-  const totalBytes=files.reduce((n,f)=>n+f.size,0);let processedBytes=0,queued=0,duplicates=0,failed=0;
+  $('ingestProgress').classList.remove('hidden');
+  stageKnowledgeFiles(files);
+  let queued=0,duplicates=0,failed=0;
   try{
     for(let fileIndex=0;fileIndex<files.length;fileIndex++){
-      const file=files[fileIndex];
-      const html=/\.html?$/i.test(file.name);
-      let cleanedText=null;
-      if(html && file.size<=25*1024*1024){
-        $('ingestProgressText').textContent='Cleaning '+file.name+'…';
-        cleanedText=cleanHtmlClient(await file.text());
-      }
-      const totalUnits=cleanedText!==null?cleanedText.length:file.size;
-      const parts=Math.max(1,Math.ceil(totalUnits/segmentChars));
-      const group=(crypto.randomUUID?crypto.randomUUID():String(Date.now())+'-'+fileIndex);
-      for(let part=0;part<parts;part++){
-        const from=Math.floor(part*segmentChars),to=Math.min(totalUnits,Math.floor((part+1)*segmentChars));
-        $('ingestProgressText').textContent='Adding '+file.name+(parts>1?' · segment '+(part+1)+'/'+parts:'')+'…';
-        try{
+      const file=files[fileIndex],row=state.knowledgeFileUploads[fileIndex];
+      try{
+        setKnowledgeFileStatus(row,'fingerprinting',5,'Computing exact SHA-256','checking');
+        const fileSha256=await sha256File(file);
+        row.sha256=fileSha256;
+        setKnowledgeFileStatus(row,'checking',10,'Checking your library','checking duplicate');
+        const check=await api('/api/knowledge/file-check',{method:'POST',body:JSON.stringify({sha256:fileSha256,name:file.name,size:file.size})});
+        if(check.duplicate){
+          duplicates++;
+          setKnowledgeFileStatus(row,'duplicate',100,'Already in library: '+String(check.source?.title||file.name),'duplicate blocked');
+          continue;
+        }
+
+        const html=/\.html?$/i.test(file.name);
+        let cleanedText=null;
+        if(html&&file.size<=25*1024*1024){
+          setKnowledgeFileStatus(row,'cleaning',20,'Removing saved-page code, images, CSS, and scripts','cleaning HTML');
+          cleanedText=cleanHtmlClient(await file.text());
+        }else{
+          setKnowledgeFileStatus(row,'reading',20,'Reading file contents','reading');
+        }
+
+        const totalUnits=cleanedText!==null?cleanedText.length:file.size;
+        const parts=Math.max(1,Math.ceil(totalUnits/segmentChars));
+        const group=(crypto.randomUUID?crypto.randomUUID():String(Date.now())+'-'+fileIndex);
+        let fileChunks=0,duplicateDuringAdd=false;
+        for(let part=0;part<parts;part++){
+          const from=Math.floor(part*segmentChars),to=Math.min(totalUnits,Math.floor((part+1)*segmentChars));
+          const partPct=25+Math.round(((part+1)/parts)*40);
+          setKnowledgeFileStatus(row,'adding',partPct,'Segment '+(part+1)+' / '+parts,'adding source');
           const text=cleanedText!==null?cleanedText.slice(from,to):await file.slice(from,to).text();
           const r=await ingestOne({
-            title:file.name,
-            text,
-            type:'file',
+            title:file.name,text,type:'file',
             metadata:{
-              file_group:group,file_name:file.name,file_size:file.size,
+              file_group:group,file_name:file.name,file_size:file.size,file_sha256:fileSha256,
               part:part+1,parts,cleaned_html:html&&cleanedText!==null
             }
           });
-          queued+=r.chunks;if(r.duplicate)duplicates++;
-        }catch(e){failed++;console.error('Knowledge file segment failed',file.name,part+1,e);}
+          if(r.duplicate){
+            duplicates++;duplicateDuringAdd=true;
+            setKnowledgeFileStatus(row,'duplicate',100,'An identical file already exists in Knowledge','duplicate blocked');
+            break;
+          }
+          if(r.sourceId)row.sourceIds.push(r.sourceId);
+          fileChunks+=r.chunks;queued+=r.chunks;
+        }
+        if(duplicateDuringAdd)continue;
+        setKnowledgeFileStatus(row,'indexing',70,fileChunks+' chunks queued','indexing');
+      }catch(e){
+        failed++;console.error('Knowledge file failed',file.name,e);
+        setKnowledgeFileStatus(row,'failed',100,e.message||'File failed','failed');
       }
-      processedBytes+=file.size;
-      $('ingestProgressBar').style.width=Math.max(3,Math.round((processedBytes/Math.max(totalBytes,1))*94))+'%';
     }
-    $('ingestProgressBar').style.width='100%';
-    $('ingestProgressText').textContent=(queued?queued.toLocaleString()+' chunks queued. ':'')+(duplicates?duplicates+' duplicate segment'+(duplicates===1?'':'s')+' skipped. ':'')+(failed?failed+' segment'+(failed===1?'':'s')+' failed. ':'')+'Indexing continues in the background.';
     $('knowledgeFile').value='';
-    await loadKnowledge();switchKnowledgeTab('library');
-    toast(failed?'Files added with '+failed+' failed segment'+(failed===1?'':'s'):'Files added to global Knowledge',4000);
-    setTimeout(()=>$('ingestProgress').classList.add('hidden'),3500);
-  }finally{btn.disabled=false;}
+    await loadKnowledge();
+    switchKnowledgeTab('library');
+    if(duplicates&&duplicates===files.length)toast('All selected files were already in your library.',4000);
+    else if(failed)toast('Files added with '+failed+' failure'+(failed===1?'':'s')+'.',4000);
+    else toast((files.length-duplicates)+' new file'+((files.length-duplicates)===1?'':'s')+' added · '+duplicates+' duplicate'+(duplicates===1?'':'s')+' blocked',4000);
+  }finally{btn.disabled=false;renderKnowledgeFileQueue();scheduleKnowledgePoll();}
 }
 
 
@@ -369,7 +461,7 @@ async function loadMemories(){try{const d=await api('/api/memories');state.memor
 
 function exportChat(){if(!state.messages.length)return;const title=activeTitle(),body=['# '+title,''].concat(state.messages.flatMap(m=>['## '+(m.role==='user'?'You':'Assistant'),'',m.content||'',''])).join('\\n');const a=document.createElement('a'),blob=new Blob([body],{type:'text/markdown'});a.href=URL.createObjectURL(blob);a.download=(title.replace(/[^a-z0-9-_]+/gi,'-')||'chat')+'.md';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),500);}
 function openModal(id){$(id).classList.remove('hidden');if(id==='knowledgeModal'){switchKnowledgeTab('library');loadKnowledge();}if(id==='memoryModal')loadMemories();}
-function closeModal(id){$(id).classList.add('hidden');}
+function closeModal(id){$(id).classList.add('hidden');if(id==='knowledgeModal'&&state.knowledgePollTimer){clearTimeout(state.knowledgePollTimer);state.knowledgePollTimer=null;}}
 function openSidebar(){$('sidebar').classList.add('open');$('backdrop').classList.add('show');}
 function closeSidebar(){$('sidebar').classList.remove('open');$('backdrop').classList.remove('show');}
 function syncSettings(){$('accessKeyInput').value=accessKey();$('settingKnowledge').checked=state.knowledgeEnabled;$('settingSources').checked=state.showSources;$('stylePrompt').value=state.style;$('responseMode').value=state.mode;$('knowledgeToggle').classList.toggle('active',state.knowledgeEnabled);$('knowledgeToggle').textContent=state.knowledgeEnabled?'Knowledge on':'Knowledge off';$('modeLabel').textContent=(state.mode==='direct'?'Direct':state.mode.charAt(0).toUpperCase()+state.mode.slice(1))+' mode';}
@@ -391,7 +483,7 @@ $('videoInput').onchange=e=>addFiles(e.target.files);
 $('addWebsiteAttachment').onclick=addWebsiteAttachment;
 $('websiteUrlInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();addWebsiteAttachment();}};
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));document.querySelectorAll('.modal').forEach(m=>m.onclick=e=>{if(e.target===m)closeModal(m.id);});
-$('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
+$('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;$('knowledgeFile').onchange=e=>stageKnowledgeFiles(e.target.files);$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
 $('knowledgeToggle').onclick=()=>{state.knowledgeEnabled=!state.knowledgeEnabled;localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));syncSettings();};
 $('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);
 $('saveSettings').onclick=()=>{state.knowledgeEnabled=$('settingKnowledge').checked;state.showSources=$('settingSources').checked;state.mode=$('responseMode').value;state.style=$('stylePrompt').value.trim()||DEFAULT_STYLE;const k=$('accessKeyInput').value.trim();if(k)localStorage.setItem('uncensor.accessKey',k);else localStorage.removeItem('uncensor.accessKey');localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));localStorage.setItem('uncensor.sources',String(state.showSources));localStorage.setItem('uncensor.mode',state.mode);localStorage.setItem('uncensor.style',state.style);syncSettings();closeModal('settingsModal');renderMessages();toast('Settings saved');loadChats();loadKnowledge();loadMemories();status();};
