@@ -12,8 +12,8 @@
     .hidden{display:none!important}
     #app{min-height:100dvh}
   </style>
-  <link rel="manifest" href="./manifest.webmanifest?v=8" />
-  <link rel="stylesheet" href="./styles.css?v=8" />
+  <link rel="manifest" href="./manifest.webmanifest?v=9" />
+  <link rel="stylesheet" href="./styles.css?v=9" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -130,35 +130,93 @@
     </div>
   </div>
 
-  <div id="knowledgeModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="knowledgeTitle">
-    <div class="modal-card knowledge-modal-card">
-      <div class="modal-head">
-        <div><h2 id="knowledgeTitle">Knowledge library</h2><p>Paste or upload large text-based sources. They are chunked, embedded, and retrieved only when relevant.</p></div>
+  <div id="knowledgeModal" class="modal knowledge-hub-modal hidden" role="dialog" aria-modal="true" aria-labelledby="knowledgeTitle">
+    <div class="modal-card knowledge-hub-card">
+      <div class="modal-head knowledge-hub-head">
+        <div>
+          <h2 id="knowledgeTitle">Knowledge</h2>
+          <p>Your permanent private library. Everything here can be retrieved from any chat when Knowledge is on.</p>
+        </div>
         <button class="icon-btn" data-close="knowledgeModal">×</button>
       </div>
-      <div class="knowledge-layout">
-        <section class="knowledge-add">
-          <div class="knowledge-url-box">
-            <label>Import websites <textarea id="knowledgeUrls" rows="3" placeholder="Paste one public URL per line — up to 20 pages"></textarea></label>
-            <button id="importKnowledgeUrls" class="secondary-btn">Import websites in background</button>
-            <small id="knowledgeUrlStatus">Pages are extracted, deduplicated, chunked, and indexed into your private library.</small>
-          </div>
-          <div class="knowledge-divider"><span>or add your own material</span></div>
-          <label>Title <input id="knowledgeTitleInput" type="text" maxlength="160" placeholder="e.g. Meta Ads notes — Module 4" /></label>
-          <label>Paste text <textarea id="knowledgeText" rows="13" maxlength="5000000" placeholder="Paste notes, transcripts, research, course material, code, or long documents here…"></textarea></label>
-          <div class="drop-row">
-            <input id="knowledgeFile" type="file" multiple accept=".txt,.md,.csv,.json,.html,.htm,.log,.js,.ts,.tsx,.jsx,.py,.sql,.css,text/*,application/json" />
-            <small>Multiple text-based files supported. Up to ~5 MB of text per source.</small>
-          </div>
-          <button id="saveKnowledge" class="primary-btn">Add to knowledge</button>
-          <div id="ingestProgress" class="progress-wrap hidden"><div class="progress-track"><div id="ingestProgressBar" class="progress-bar"></div></div><span id="ingestProgressText">Indexing…</span></div>
-        </section>
-        <section class="knowledge-sources">
-          <div class="section-row"><h3>Saved sources</h3><button id="refreshKnowledge" class="text-btn">Refresh</button></div>
-          <div class="knowledge-search"><input id="knowledgeSearch" type="search" placeholder="Search source titles" /></div>
-          <div id="knowledgeList" class="knowledge-list"></div>
-        </section>
+
+      <div class="knowledge-hub-toolbar">
+        <div class="knowledge-tabs">
+          <button id="knowledgeLibraryTab" class="knowledge-tab active">Library</button>
+          <button id="knowledgeAddTab" class="knowledge-tab">＋ Add source</button>
+        </div>
+        <div class="knowledge-stats">
+          <span><strong id="knowledgeTotalSources">0</strong> sources</span>
+          <span><strong id="knowledgeReadySources">0</strong> ready</span>
+          <span><strong id="knowledgeTotalChunks">0</strong> chunks</span>
+        </div>
       </div>
+
+      <section id="knowledgeLibraryPanel" class="knowledge-library-panel">
+        <div class="knowledge-library-controls">
+          <div class="knowledge-search knowledge-search-large"><input id="knowledgeSearch" type="search" placeholder="Search your entire knowledge library…" /></div>
+          <select id="knowledgeTypeFilter" class="knowledge-filter">
+            <option value="all">All types</option>
+            <option value="website">Websites</option>
+            <option value="paste">Notes / pasted text</option>
+            <option value="file">Files</option>
+          </select>
+          <select id="knowledgeStatusFilter" class="knowledge-filter">
+            <option value="all">All status</option>
+            <option value="ready">Ready</option>
+            <option value="processing">Processing</option>
+            <option value="queued">Queued</option>
+            <option value="failed">Failed</option>
+          </select>
+          <button id="refreshKnowledge" class="secondary-btn">Refresh</button>
+        </div>
+        <div id="knowledgeList" class="knowledge-list knowledge-library-list"></div>
+      </section>
+
+      <section id="knowledgeAddPanel" class="knowledge-add-panel hidden">
+        <div class="knowledge-add-intro">
+          <h3>Add anything you want the AI to know later</h3>
+          <p>Sources are global—not tied to this chat. They are deduplicated, indexed in the background, and retrieved only when relevant.</p>
+        </div>
+
+        <label class="knowledge-collection-label">Collection
+          <input id="knowledgeCollection" type="text" maxlength="80" placeholder="Optional — e.g. Meta Ads, Real Estate, Tax, Biology" />
+        </label>
+
+        <div class="knowledge-add-grid">
+          <div class="knowledge-add-card">
+            <div class="knowledge-add-card-icon">↗</div>
+            <h3>Websites</h3>
+            <p>Paste up to 20 public pages at once.</p>
+            <textarea id="knowledgeUrls" rows="5" placeholder="https://example.com/article&#10;https://forum.com/thread"></textarea>
+            <button id="importKnowledgeUrls" class="primary-btn">Import websites</button>
+            <small id="knowledgeUrlStatus">Pages are extracted, deduplicated, chunked, and indexed in the background.</small>
+          </div>
+
+          <div class="knowledge-add-card">
+            <div class="knowledge-add-card-icon">✎</div>
+            <h3>Notes / transcripts</h3>
+            <p>Paste anything from a short note to millions of characters.</p>
+            <input id="knowledgeTitleInput" type="text" maxlength="160" placeholder="Source title" />
+            <textarea id="knowledgeText" rows="8" maxlength="5000000" placeholder="Paste notes, transcripts, research, course material, code, or long documents here…"></textarea>
+            <button id="saveKnowledge" class="primary-btn">Add text to Knowledge</button>
+          </div>
+
+          <div class="knowledge-add-card">
+            <div class="knowledge-add-card-icon">▤</div>
+            <h3>Text files</h3>
+            <p>Upload multiple text, Markdown, CSV, JSON, HTML, or code files.</p>
+            <input id="knowledgeFile" type="file" multiple accept=".txt,.md,.csv,.json,.html,.htm,.log,.js,.ts,.tsx,.jsx,.py,.sql,.css,text/*,application/json" />
+            <small>Up to about 5 MB of extracted text per source. PDF/DOCX/PPTX ingestion is the next file-processing upgrade.</small>
+            <button id="saveKnowledgeFiles" class="secondary-btn">Add selected files</button>
+          </div>
+        </div>
+
+        <div id="ingestProgress" class="progress-wrap hidden">
+          <div class="progress-track"><div id="ingestProgressBar" class="progress-bar"></div></div>
+          <span id="ingestProgressText">Indexing…</span>
+        </div>
+      </section>
     </div>
   </div>
 
@@ -196,7 +254,7 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="./config.js?v=8"></script>
-  <script src="./app.js?v=8" defer></script>
+  <script src="./config.js?v=9"></script>
+  <script src="./app.js?v=9" defer></script>
 </body>
 </html>
