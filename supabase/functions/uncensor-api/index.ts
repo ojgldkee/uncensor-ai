@@ -597,13 +597,46 @@ async function memoriesRoute(req: Request) {
 
 async function knowledgeList() {
   const q = await db.from('private_ai_knowledge_sources')
-    .select('id,title,source_type,enabled,content_hash,char_count,chunk_count,embedded_chunk_count,status,failure_count,last_error,metadata,created_at,updated_at,completed_at')
+    .select('id,title,source_type,enabled,content_hash,file_sha256,char_count,chunk_count,embedded_chunk_count,status,failure_count,last_error,metadata,created_at,updated_at,completed_at')
     .order('created_at', { ascending: false }).limit(1000)
   if (q.error) throw q.error
   return json({ sources: q.data || [] })
 }
 
-async function createKnowledgeRecord(title: string, text: string, sourceType = 'paste', metadata: any = {}) {
+async function findDuplicateFile(fileSha256: string, title: string, fileSize: number) {
+  const sha=String(fileSha256||'').toLowerCase().trim()
+  if(sha){
+    const exact=await db.from('private_ai_knowledge_sources')
+      .select('id,title,status,chunk_count,embedded_chunk_count,file_sha256,metadata')
+      .eq('source_type','file').eq('file_sha256',sha).maybeSingle()
+    if(exact.error)throw exact.error
+    if(exact.data)return { source:exact.data, reason:'exact_sha256' }
+  }
+  const legacy=await db.from('private_ai_knowledge_sources')
+    .select('id,title,status,chunk_count,embedded_chunk_count,file_sha256,metadata')
+    .eq('source_type','file').eq('title',title.trim().slice(0,160)).limit(25)
+  if(legacy.error)throw legacy.error
+  const match=(legacy.data||[]).find((x:any)=>!x.file_sha256 && Number(x.metadata?.file_size||-1)===Number(fileSize))
+  return match ? { source:match, reason:'legacy_name_size' } : null
+}
+
+async function knowledgeFileCheck(req: Request) {
+  const body=await req.json().catch(()=>({}))
+  const sha=String(body?.sha256||'').toLowerCase().trim()
+  const name=String(body?.name||'').trim().slice(0,160)
+  const size=Number(body?.size||0)
+  if(!sha || !/^[a-f0-9]{64}$/.test(sha))return json({error:'Valid SHA-256 fingerprint required.'},400)
+  if(!name || !Number.isFinite(size) || size<0)return json({error:'File name and size are required.'},400)
+  const found=await findDuplicateFile(sha,name,size)
+  return json({
+    ok:true,
+    duplicate:Boolean(found),
+    reason:found?.reason||null,
+    source:found?.source||null,
+  })
+}
+
+async function createKnowledgeRecord(title: string, text: string, sourceType = 'paste', metadata: any = {}, fileSha256: string | null = null) {
   if (!text.trim()) return json({ error: 'No readable text found.' }, 400)
   if (text.length > 5000000) return json({ error: 'Source exceeds 5,000,000 characters.' }, 413)
   const hash = await contentHash(text)
@@ -618,6 +651,7 @@ async function createKnowledgeRecord(title: string, text: string, sourceType = '
     source_type: sourceType.slice(0,40),
     enabled: true,
     content_hash: hash,
+    file_sha256: fileSha256 || null,
     char_count: text.length,
     chunk_count: parts.length,
     embedded_chunk_count: 0,
@@ -645,6 +679,12 @@ async function knowledgeCreate(req: Request) {
   const title=String(body?.title || 'Untitled')
   const sourceType=String(body?.source_type || 'paste')
   const metadata=body?.metadata || {}
+  const part=Math.max(1,Number(metadata?.part||1))
+  const fileSha=sourceType==='file' && part===1 ? String(metadata?.file_sha256||'').toLowerCase().trim() : ''
+  if(fileSha){
+    const found=await findDuplicateFile(fileSha,title,Number(metadata?.file_size||0))
+    if(found)return json({ok:true,duplicate:true,duplicate_reason:found.reason,source:found.source})
+  }
   let text=String(body?.text || '')
   const isHtml=sourceType==='file' && (/\.html?$/i.test(title) || /\.html?$/i.test(String(metadata?.file_name || '')))
   if(isHtml){
@@ -654,7 +694,7 @@ async function knowledgeCreate(req: Request) {
     metadata.raw_segment_chars=before
     metadata.cleaned_segment_chars=text.length
   }
-  return createKnowledgeRecord(title,text,sourceType,metadata)
+  return createKnowledgeRecord(title,text,sourceType,metadata,fileSha||null)
 }
 
 async function knowledgeUrlCreate(req: Request) {
@@ -704,6 +744,7 @@ Deno.serve(async (req) => {
     if (path === '/api/conversations' && req.method === 'GET') return listConversations()
     if (path === '/api/memories') return memoriesRoute(req)
     if (path === '/api/knowledge' && req.method === 'GET') return knowledgeList()
+    if (path === '/api/knowledge/file-check' && req.method === 'POST') return knowledgeFileCheck(req)
     if (path === '/api/knowledge' && req.method === 'POST') return knowledgeCreate(req)
     if (path === '/api/knowledge/url' && req.method === 'POST') return knowledgeUrlCreate(req)
 
