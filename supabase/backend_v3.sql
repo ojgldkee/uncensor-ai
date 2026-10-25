@@ -638,3 +638,12 @@ select cron.schedule(
   '10 seconds',
   $$ select public.private_ai_dispatch_worker(); $$
 );
+
+
+-- Exact duplicate-file protection.
+alter table public.private_ai_knowledge_sources
+  add column if not exists file_sha256 text;
+
+create unique index if not exists private_ai_knowledge_file_sha256_uidx
+  on public.private_ai_knowledge_sources(file_sha256)
+  where source_type='file' and file_sha256 is not null;
