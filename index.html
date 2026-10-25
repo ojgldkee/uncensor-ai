@@ -30,6 +30,10 @@
       <div id="conversationList" class="conversation-list"></div>
 
       <div class="sidebar-footer">
+        <button id="openMemory" class="sidebar-action">
+          <span class="sidebar-action-icon">◈</span>
+          <span><strong>Memory</strong><small id="memoryCount">0 memories</small></span>
+        </button>
         <button id="openKnowledge" class="sidebar-action">
           <span class="sidebar-action-icon">▤</span>
           <span><strong>Knowledge</strong><small id="knowledgeCount">0 sources</small></span>
@@ -130,6 +134,7 @@
           <option value="direct">Direct</option><option value="teacher">Teacher</option><option value="precise">Precise</option><option value="deep">Deep analysis</option>
         </select>
       </label>
+      <label class="setting-stack"><span><strong>Private access key</strong><small>Stored only on this device. It is never committed to GitHub.</small></span><input id="accessKeyInput" type="password" autocomplete="off" placeholder="Enter once on this device" /></label>
       <label class="setting-stack"><span><strong>Custom instructions</strong><small>Added to the server-side assistant prompt for your requests.</small></span><textarea id="stylePrompt" rows="7"></textarea></label>
       <div class="settings-info"><span>Status</span><strong id="settingsStatus">Checking…</strong></div>
       <div class="settings-info"><span>Storage</span><strong>Chats + knowledge persist in Supabase</strong></div>
@@ -137,7 +142,20 @@
     </div>
   </div>
 
+  <div id="memoryModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="memoryTitle">
+    <div class="modal-card knowledge-modal-card">
+      <div class="modal-head">
+        <div><h2 id="memoryTitle">Long-term memory</h2><p>Durable facts, preferences, goals, decisions, and project context learned across chats.</p></div>
+        <button class="icon-btn" data-close="memoryModal">×</button>
+      </div>
+      <div class="section-row" style="margin-top:16px"><h3>Remembered context</h3><button id="refreshMemory" class="text-btn">Refresh</button></div>
+      <div class="knowledge-search"><input id="memorySearch" type="search" placeholder="Search memories" /></div>
+      <div id="memoryList" class="knowledge-list"></div>
+    </div>
+  </div>
+
   <div id="toast" class="toast hidden"></div>
-  <script src="./app.js?v=3" defer></script>
+  <script src="./config.js?v=4"></script>
+  <script src="./app.js?v=4" defer></script>
 </body>
 </html>
