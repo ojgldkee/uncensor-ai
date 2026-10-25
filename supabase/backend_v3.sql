@@ -267,7 +267,8 @@ begin
 
   select * into cfg from public.private_ai_runtime_config where id=true;
 
-  if conv.total_message_count - conv.summary_through_message_count >= cfg.summary_trigger_messages then
+  if conv.total_message_count - conv.summary_through_message_count >= cfg.summary_trigger_messages
+     and mod(conv.total_message_count - conv.summary_through_message_count, greatest(cfg.summary_trigger_messages,1)) = 0 then
     perform pgmq.send('uncensor_jobs', jsonb_build_object(
       'type','summarize_conversation',
       'conversation_id',new.conversation_id,
@@ -275,7 +276,7 @@ begin
     ));
   end if;
 
-  if new.role='assistant' and mod(conv.total_message_count, greatest(cfg.memory_trigger_messages,2)) in (0,1) then
+  if new.role='assistant' and mod(conv.total_message_count, greatest(cfg.memory_trigger_messages,2)) = 0 then
     perform pgmq.send('uncensor_jobs', jsonb_build_object(
       'type','extract_memories',
       'conversation_id',new.conversation_id,
