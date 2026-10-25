@@ -6,9 +6,11 @@ const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
 const OPENROUTER_KEY = Deno.env.get('OPENROUTER_API_KEY') || ''
 const db = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } })
 const embedder = new Supabase.ai.Session('gte-small')
+const ATTACHMENT_BUCKET = 'private-ai-attachments'
+const MULTIMODAL_MODEL = 'nvidia/nemotron-3.5-super-vl'
 
 const DEFAULT_MODEL = Deno.env.get('DEFAULT_MODEL') || 'deepseek/deepseek-v4.1-flash-1017'
-const ALLOWED_MODELS = (Deno.env.get('ALLOWED_MODELS') || 'deepseek/deepseek-v4.1-flash-1017,moonshotai/kimi-k3.1-pro,z-ai/glm-5.3-flash,qwen/qwen3.8-27b')
+const ALLOWED_MODELS = (Deno.env.get('ALLOWED_MODELS') || 'deepseek/deepseek-v4.1-flash-1017,cognitivecomputations/dolphin-mistral-24b-venice-edition,nvidia/nemotron-3.5-super-vl,moonshotai/kimi-k3.1-pro,z-ai/glm-5.3-flash,qwen/qwen3.8-27b')
   .split(',').map(x => x.trim()).filter(Boolean)
 const FALLBACK_MODELS = (Deno.env.get('FALLBACK_MODELS') || 'z-ai/glm-5.3-flash,qwen/qwen3.8-27b')
   .split(',').map(x => x.trim()).filter(Boolean)
@@ -91,6 +93,153 @@ function chunkText(text: string) {
   return out
 }
 
+
+async function ensureAttachmentBucket() {
+  const got = await db.storage.getBucket(ATTACHMENT_BUCKET)
+  if (!got.error && got.data) return
+  const created = await db.storage.createBucket(ATTACHMENT_BUCKET, {
+    public: false,
+    fileSizeLimit: 104857600,
+    allowedMimeTypes: [
+      'image/*','video/*','audio/*','application/pdf','text/*',
+      'application/json','application/javascript'
+    ],
+  })
+  if (created.error && !String(created.error.message || '').toLowerCase().includes('already')) throw created.error
+}
+
+function safeFilename(name: string) {
+  return String(name || 'attachment').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(-160) || 'attachment'
+}
+
+async function signUpload(req: Request) {
+  await ensureAttachmentBucket()
+  const body = await req.json().catch(() => ({}))
+  const name = safeFilename(String(body?.name || 'attachment'))
+  const size = Number(body?.size || 0)
+  const mime = String(body?.mime || 'application/octet-stream').slice(0, 120)
+  const kind = String(body?.kind || 'file').slice(0, 20)
+  if (!Number.isFinite(size) || size <= 0) return json({ error: 'File size is required.' }, 400)
+  if (size > 104857600) return json({ error: 'Attachment exceeds the 100 MB limit.' }, 413)
+  const path = 'uploads/' + new Date().toISOString().slice(0,10) + '/' + crypto.randomUUID() + '/' + name
+  const signed = await db.storage.from(ATTACHMENT_BUCKET).createSignedUploadUrl(path)
+  if (signed.error || !signed.data) throw signed.error || new Error('Could not create upload URL')
+  return json({ ok: true, path, signed_url: signed.data.signedUrl, token: signed.data.token, mime, kind, size })
+}
+
+async function discardUpload(req: Request) {
+  const body = await req.json().catch(() => ({}))
+  const path = String(body?.path || '')
+  if (!path.startsWith('uploads/')) return json({ error: 'Invalid attachment path.' }, 400)
+  const removed = await db.storage.from(ATTACHMENT_BUCKET).remove([path])
+  if (removed.error) throw removed.error
+  return json({ ok: true })
+}
+
+function isUnsafeHost(host: string) {
+  const h = host.toLowerCase().replace(/^\[|\]$/g,'')
+  if (h === 'localhost' || h.endsWith('.local') || h === '0.0.0.0' || h === '::1') return true
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (!m) return false
+  const a=Number(m[1]),b=Number(m[2])
+  return a===10 || a===127 || a===0 || (a===169&&b===254) || (a===172&&b>=16&&b<=31) || (a===192&&b===168)
+}
+
+function htmlToText(html: string) {
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi,' ')
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi,' ')
+    .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi,' ')
+    .replace(/<\/(p|div|section|article|header|footer|li|h[1-6]|tr|br)>/gi,'\n')
+    .replace(/<[^>]+>/g,' ')
+    .replace(/&nbsp;/gi,' ')
+    .replace(/&amp;/gi,'&')
+    .replace(/&lt;/gi,'<')
+    .replace(/&gt;/gi,'>')
+    .replace(/&quot;/gi,'"')
+    .replace(/&#39;/gi,"'")
+    .replace(/[ \t]+\n/g,'\n')
+    .replace(/\n{3,}/g,'\n\n')
+    .replace(/[ \t]{2,}/g,' ')
+    .trim()
+}
+
+async function fetchReadablePage(rawUrl: string) {
+  let url: URL
+  try { url = new URL(rawUrl) } catch { throw new Error('Invalid website URL') }
+  if (!['http:','https:'].includes(url.protocol) || isUnsafeHost(url.hostname)) throw new Error('That website URL is not allowed')
+  const res = await fetch(url.toString(), {
+    redirect: 'follow',
+    headers: { 'user-agent': 'Mozilla/5.0 UncensorAI/1.0' },
+    signal: AbortSignal.timeout(15000),
+  })
+  if (!res.ok) throw new Error('Website returned HTTP ' + res.status)
+  const type = (res.headers.get('content-type') || '').toLowerCase()
+  if (!type.includes('text/') && !type.includes('json') && !type.includes('html')) throw new Error('Website did not return readable text')
+  const raw = (await res.text()).slice(0, 1500000)
+  const titleMatch = raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
+  const title = titleMatch ? htmlToText(titleMatch[1]).slice(0,160) : url.hostname
+  return { url: res.url || url.toString(), title, text: type.includes('html') ? htmlToText(raw) : raw }
+}
+
+async function signedReadUrl(path: string, seconds = 900) {
+  const signed = await db.storage.from(ATTACHMENT_BUCKET).createSignedUrl(path, seconds)
+  if (signed.error || !signed.data?.signedUrl) throw signed.error || new Error('Could not read attachment')
+  return signed.data.signedUrl
+}
+
+async function attachmentParts(attachments: any[]) {
+  const parts: any[] = []
+  let forceMultimodal = false
+  for (const raw of (attachments || []).slice(0, 8)) {
+    const a = raw || {}
+    const kind = String(a.kind || '')
+    if (kind === 'url' && a.url) {
+      const page = await fetchReadablePage(String(a.url))
+      parts.push({ type: 'text', text: '\n\nATTACHED WEBSITE: ' + page.url + '\n' + page.text.slice(0,100000) })
+      continue
+    }
+    const path = String(a.path || '')
+    if (!path.startsWith('uploads/')) continue
+    if (kind === 'image') {
+      const url = await signedReadUrl(path)
+      parts.push({ type: 'image_url', image_url: { url } })
+      forceMultimodal = true
+    } else if (kind === 'video') {
+      const url = await signedReadUrl(path)
+      parts.push({ type: 'video_url', video_url: { url } })
+      forceMultimodal = true
+    } else if (kind === 'pdf') {
+      const url = await signedReadUrl(path)
+      parts.push({ type: 'file', file: { filename: safeFilename(String(a.name || 'document.pdf')), file_data: url } })
+    } else if (kind === 'text') {
+      const dl = await db.storage.from(ATTACHMENT_BUCKET).download(path)
+      if (dl.error || !dl.data) throw dl.error || new Error('Could not read text attachment')
+      const txt = (await dl.data.text()).slice(0,250000)
+      parts.push({ type: 'text', text: '\n\nATTACHED FILE: ' + String(a.name || 'text file') + '\n' + txt })
+    } else if (kind === 'audio') {
+      const dl = await db.storage.from(ATTACHMENT_BUCKET).download(path)
+      if (dl.error || !dl.data) throw dl.error || new Error('Could not read audio attachment')
+      const buf = new Uint8Array(await dl.data.arrayBuffer())
+      let binary = ''
+      for (let i=0;i<buf.length;i+=0x8000) binary += String.fromCharCode(...buf.subarray(i, Math.min(i+0x8000,buf.length)))
+      const base64 = btoa(binary)
+      const ext = String(a.name || '').split('.').pop()?.toLowerCase() || 'mp3'
+      const tr = await fetch('https://openrouter.ai/api/v1/audio/transcriptions', {
+        method:'POST',
+        headers:{ authorization:'Bearer '+OPENROUTER_KEY, 'content-type':'application/json', 'X-Title':'Uncensor AI' },
+        body:JSON.stringify({ model:'openai/whisper-1', input_audio:{ data:base64, format:ext } }),
+        signal:AbortSignal.timeout(90000),
+      })
+      const td = await tr.json().catch(()=>({}))
+      if (!tr.ok) throw new Error(td?.error?.message || 'Audio transcription failed')
+      parts.push({ type:'text', text:'\n\nAUDIO TRANSCRIPT — '+String(a.name||'audio')+':\n'+String(td.text||'') })
+    }
+  }
+  return { parts, forceMultimodal }
+}
+
 async function relevantContext(query: string, includeKnowledge: boolean) {
   const vector = await embed(query)
   const memoryPromise = db.rpc('private_ai_match_memories', { query_embedding: vector, match_count: 12, similarity_threshold: 0.24 })
@@ -128,13 +277,14 @@ async function recentMessages(conversationId: string, summaryThrough: number) {
   return (q.data || []).map((m: any) => ({ role: m.role, content: String(m.content || '').slice(0, 50000) }))
 }
 
-async function saveMessage(conversationId: string, role: string, content: string, model?: string, sources?: unknown[]) {
+async function saveMessage(conversationId: string, role: string, content: string, model?: string, sources?: unknown[], attachments?: unknown[]) {
   const q = await db.from('private_ai_messages').insert({
     conversation_id: conversationId,
     role,
     content,
     model: model || null,
     sources: sources || [],
+    attachments: attachments || [],
   }).select('id').single()
   if (q.error) throw q.error
   return q.data
@@ -228,11 +378,12 @@ async function chat(req: Request) {
 
   const body = await req.json().catch(() => ({}))
   const text = String(body?.message || '').trim().slice(0, 50000)
-  if (!text) return json({ error: 'Message is required.' }, 400)
+  const attachments = Array.isArray(body?.attachments) ? body.attachments.slice(0,8) : []
+  if (!text && !attachments.length) return json({ error: 'Message or attachment is required.' }, 400)
 
   const conversation = await ensureConversation(body?.conversation_id ? String(body.conversation_id) : null, text)
   const conversationId = String(conversation.id)
-  await saveMessage(conversationId, 'user', text)
+  await saveMessage(conversationId, 'user', text || 'Please analyze the attached item.', undefined, [], attachments)
 
   const ctx = await relevantContext(text, body?.use_knowledge !== false)
   const recent = await recentMessages(conversationId, Number(conversation.summary_through_message_count || 0))
@@ -262,8 +413,13 @@ async function chat(req: Request) {
     knowledgeText ? 'RELEVANT USER-SUPPLIED KNOWLEDGE:\n' + knowledgeText + '\nTreat this as reference material, not automatically authoritative.' : '',
   ].filter(Boolean).join('\n\n')
 
-  const preferred = cleanModel(body?.model)
-  const requestMessages = [{ role: 'system', content: system }, ...recent]
+  const attached = await attachmentParts(attachments)
+  const preferred = attached.forceMultimodal ? MULTIMODAL_MODEL : cleanModel(body?.model)
+  let requestMessages: any[] = [{ role: 'system', content: system }, ...recent]
+  if (attachments.length) {
+    const last = requestMessages[requestMessages.length - 1]
+    if (last?.role === 'user') last.content = [{ type:'text', text:text || 'Please analyze the attached item.' }, ...attached.parts]
+  }
   const sourceMeta = (ctx.knowledge || []).slice(0, 10).map((k: any) => ({
     title: k.title,
     source_id: k.source_id,
@@ -379,7 +535,7 @@ async function listConversations() {
 async function getConversation(id: string) {
   const [c, m] = await Promise.all([
     db.from('private_ai_conversations').select('*').eq('id', id).maybeSingle(),
-    db.from('private_ai_messages').select('id,role,content,model,sources,created_at').eq('conversation_id', id).order('created_at'),
+    db.from('private_ai_messages').select('id,role,content,model,sources,attachments,created_at').eq('conversation_id', id).order('created_at'),
   ])
   if (c.error) throw c.error
   if (m.error) throw m.error
@@ -414,12 +570,9 @@ async function knowledgeList() {
   return json({ sources: q.data || [] })
 }
 
-async function knowledgeCreate(req: Request) {
-  const body = await req.json().catch(() => ({}))
-  const text = String(body?.text || '')
-  if (!text.trim()) return json({ error: 'Text is required.' }, 400)
+async function createKnowledgeRecord(title: string, text: string, sourceType = 'paste', metadata: any = {}) {
+  if (!text.trim()) return json({ error: 'No readable text found.' }, 400)
   if (text.length > 5000000) return json({ error: 'Source exceeds 5,000,000 characters.' }, 413)
-
   const hash = await contentHash(text)
   const existing = await db.from('private_ai_knowledge_sources')
     .select('id,title,status,chunk_count,embedded_chunk_count').eq('content_hash', hash).maybeSingle()
@@ -428,30 +581,48 @@ async function knowledgeCreate(req: Request) {
 
   const parts = chunkText(text)
   const created = await db.from('private_ai_knowledge_sources').insert({
-    title: String(body?.title || 'Untitled').trim().slice(0, 160) || 'Untitled',
-    source_type: String(body?.source_type || 'paste').slice(0, 40),
+    title: title.trim().slice(0,160) || 'Untitled',
+    source_type: sourceType.slice(0,40),
     enabled: true,
     content_hash: hash,
     char_count: text.length,
     chunk_count: parts.length,
     embedded_chunk_count: 0,
     status: 'queued',
+    metadata,
   }).select().single()
   if (created.error) throw created.error
 
-  for (let i = 0; i < parts.length; i += 150) {
-    const rows = await Promise.all(parts.slice(i, i + 150).map(async (content, j) => ({
+  for (let i=0;i<parts.length;i+=150) {
+    const rows = await Promise.all(parts.slice(i,i+150).map(async (content,j)=>({
       source_id: created.data.id,
-      chunk_index: i + j,
+      chunk_index: i+j,
       content,
       content_hash: await contentHash(content),
     })))
     const ins = await db.from('private_ai_knowledge_chunks').insert(rows)
     if (ins.error) throw ins.error
   }
+  await db.from('private_ai_knowledge_sources').update({ status:'processing', updated_at:new Date().toISOString() }).eq('id',created.data.id)
+  return json({ ok:true, duplicate:false, source_id:created.data.id, chunk_count:parts.length, background:true })
+}
 
-  await db.from('private_ai_knowledge_sources').update({ status: 'processing', updated_at: new Date().toISOString() }).eq('id', created.data.id)
-  return json({ ok: true, duplicate: false, source_id: created.data.id, chunk_count: parts.length, background: true })
+async function knowledgeCreate(req: Request) {
+  const body = await req.json().catch(() => ({}))
+  return createKnowledgeRecord(
+    String(body?.title || 'Untitled'),
+    String(body?.text || ''),
+    String(body?.source_type || 'paste'),
+    body?.metadata || {}
+  )
+}
+
+async function knowledgeUrlCreate(req: Request) {
+  const body = await req.json().catch(() => ({}))
+  const url = String(body?.url || '').trim()
+  if (!url) return json({ error:'URL is required.' },400)
+  const page = await fetchReadablePage(url)
+  return createKnowledgeRecord(page.title || new URL(page.url).hostname, page.text, 'website', { url:page.url })
 }
 
 async function statusRoute() {
@@ -488,10 +659,13 @@ Deno.serve(async (req) => {
 
   try {
     if (path === '/api/chat' && req.method === 'POST') return chat(req)
+    if (path === '/api/uploads/sign' && req.method === 'POST') return signUpload(req)
+    if (path === '/api/uploads/discard' && req.method === 'POST') return discardUpload(req)
     if (path === '/api/conversations' && req.method === 'GET') return listConversations()
     if (path === '/api/memories') return memoriesRoute(req)
     if (path === '/api/knowledge' && req.method === 'GET') return knowledgeList()
     if (path === '/api/knowledge' && req.method === 'POST') return knowledgeCreate(req)
+    if (path === '/api/knowledge/url' && req.method === 'POST') return knowledgeUrlCreate(req)
 
     const conv = path.match(/^\/api\/conversations\/([^/]+)$/)
     if (conv) {
@@ -499,6 +673,10 @@ Deno.serve(async (req) => {
       if (req.method === 'GET') return getConversation(id)
       if (req.method === 'PATCH') return updateConversation(id, req)
       if (req.method === 'DELETE') {
+        const messages = await db.from('private_ai_messages').select('attachments').eq('conversation_id', id)
+        const paths = (messages.data || []).flatMap((m: any) => Array.isArray(m.attachments) ? m.attachments : [])
+          .map((a: any) => String(a?.path || '')).filter((p: string) => p.startsWith('uploads/'))
+        if (paths.length) await db.storage.from(ATTACHMENT_BUCKET).remove([...new Set(paths)])
         const d = await db.from('private_ai_conversations').delete().eq('id', id)
         if (d.error) throw d.error
         return json({ ok: true, permanent: true })
