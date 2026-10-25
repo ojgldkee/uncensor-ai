@@ -563,7 +563,7 @@ async function memoriesRoute(req: Request) {
 
 async function knowledgeList() {
   const q = await db.from('private_ai_knowledge_sources')
-    .select('id,title,source_type,enabled,content_hash,char_count,chunk_count,embedded_chunk_count,status,failure_count,last_error,created_at,updated_at,completed_at')
+    .select('id,title,source_type,enabled,content_hash,char_count,chunk_count,embedded_chunk_count,status,failure_count,last_error,metadata,created_at,updated_at,completed_at')
     .order('created_at', { ascending: false }).limit(1000)
   if (q.error) throw q.error
   return json({ sources: q.data || [] })
@@ -621,7 +621,7 @@ async function knowledgeUrlCreate(req: Request) {
   const url = String(body?.url || '').trim()
   if (!url) return json({ error:'URL is required.' },400)
   const page = await fetchReadablePage(url)
-  return createKnowledgeRecord(page.title || new URL(page.url).hostname, page.text, 'website', { url:page.url })
+  return createKnowledgeRecord(page.title || new URL(page.url).hostname, page.text, 'website', { url:page.url, collection:String(body?.collection || '').trim().slice(0,80) })
 }
 
 async function statusRoute() {
