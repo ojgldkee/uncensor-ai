@@ -658,7 +658,15 @@ async function createKnowledgeRecord(title: string, text: string, sourceType = '
     status: 'queued',
     metadata,
   }).select().single()
-  if (created.error) throw created.error
+  if (created.error) {
+    if (fileSha256 && String((created.error as any)?.code || '') === '23505') {
+      const exact = await db.from('private_ai_knowledge_sources')
+        .select('id,title,status,chunk_count,embedded_chunk_count,file_sha256,metadata')
+        .eq('source_type','file').eq('file_sha256',fileSha256).maybeSingle()
+      if (!exact.error && exact.data) return json({ ok:true, duplicate:true, duplicate_reason:'exact_sha256', source:exact.data })
+    }
+    throw created.error
+  }
 
   for (let i=0;i<parts.length;i+=150) {
     const rows = await Promise.all(parts.slice(i,i+150).map(async (content,j)=>({
