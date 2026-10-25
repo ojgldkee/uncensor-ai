@@ -453,3 +453,188 @@ on conflict (id) do update
 set public=false,
     file_size_limit=104857600,
     updated_at=now();
+
+
+-- v4 batched indexing architecture
+-- Knowledge embeddings are claimed directly in batches instead of creating one PGMQ
+-- message per chunk. This avoids Edge Function resource exhaustion on large libraries.
+alter table public.private_ai_knowledge_chunks
+  add column if not exists embedding_claimed_at timestamptz;
+
+create index if not exists private_ai_knowledge_unembedded_idx
+  on public.private_ai_knowledge_chunks(id)
+  where embedding is null;
+
+drop trigger if exists private_ai_knowledge_queue_trigger on public.private_ai_knowledge_chunks;
+
+create or replace function public.private_ai_claim_knowledge_chunks(
+  batch_size integer default 192,
+  lease_seconds integer default 180
+)
+returns table(id bigint, source_id uuid, content text)
+language plpgsql
+security definer
+set search_path=''
+as $$
+begin
+  return query
+  with picked as (
+    select c.id
+    from public.private_ai_knowledge_chunks c
+    join public.private_ai_knowledge_sources s on s.id=c.source_id
+    where c.embedding is null
+      and s.enabled=true
+      and s.status in ('queued','processing')
+      and (
+        c.embedding_claimed_at is null
+        or c.embedding_claimed_at < now() - ((greatest(lease_seconds,30)::text || ' seconds')::interval)
+      )
+    order by c.id
+    for update of c skip locked
+    limit greatest(1,least(batch_size,512))
+  )
+  update public.private_ai_knowledge_chunks c
+     set embedding_claimed_at=now()
+    from picked p
+   where c.id=p.id
+  returning c.id,c.source_id,c.content;
+end;
+$$;
+
+create or replace function public.private_ai_set_chunk_embeddings(payload jsonb)
+returns integer
+language plpgsql
+security definer
+set search_path=''
+as $$
+declare changed integer;
+begin
+  with rows as (
+    select x.id,x.embedding
+    from pg_catalog.jsonb_to_recordset(payload) as x(id bigint,embedding text)
+  )
+  update public.private_ai_knowledge_chunks c
+     set embedding=cast(rows.embedding as extensions.vector),
+         embedding_claimed_at=null
+    from rows
+   where c.id=rows.id;
+  get diagnostics changed=row_count;
+  return changed;
+end;
+$$;
+
+create or replace function public.private_ai_set_memory_embeddings(payload jsonb)
+returns integer
+language plpgsql
+security definer
+set search_path=''
+as $$
+declare changed integer;
+begin
+  with rows as (
+    select x.id,x.embedding
+    from pg_catalog.jsonb_to_recordset(payload) as x(id uuid,embedding text)
+  )
+  update public.private_ai_memories m
+     set embedding=cast(rows.embedding as extensions.vector),
+         updated_at=now()
+    from rows
+   where m.id=rows.id;
+  get diagnostics changed=row_count;
+  return changed;
+end;
+$$;
+
+create or replace function public.private_ai_refresh_knowledge_progress(source_ids uuid[])
+returns integer
+language plpgsql
+security definer
+set search_path=''
+as $$
+declare changed integer;
+begin
+  with counts as (
+    select c.source_id,
+           count(*)::integer as total,
+           count(*) filter (where c.embedding is not null)::integer as embedded
+    from public.private_ai_knowledge_chunks c
+    where c.source_id=any(source_ids)
+    group by c.source_id
+  )
+  update public.private_ai_knowledge_sources s
+     set embedded_chunk_count=counts.embedded,
+         status=case when counts.total>0 and counts.embedded>=counts.total then 'ready' else 'processing' end,
+         completed_at=case when counts.total>0 and counts.embedded>=counts.total then coalesce(s.completed_at,now()) else null end,
+         last_error=null,
+         updated_at=now()
+    from counts
+   where s.id=counts.source_id;
+  get diagnostics changed=row_count;
+  return changed;
+end;
+$$;
+
+create or replace function public.private_ai_replace_knowledge_chunks(
+  p_source_id uuid,
+  p_content_hash text,
+  p_char_count integer,
+  p_chunks jsonb,
+  p_metadata jsonb
+)
+returns integer
+language plpgsql
+security definer
+set search_path=''
+as $$
+declare inserted integer;
+begin
+  delete from public.private_ai_knowledge_chunks where source_id=p_source_id;
+
+  insert into public.private_ai_knowledge_chunks(source_id,chunk_index,content,content_hash)
+  select p_source_id,x.chunk_index,x.content,x.content_hash
+  from pg_catalog.jsonb_to_recordset(p_chunks)
+    as x(chunk_index integer,content text,content_hash text);
+
+  get diagnostics inserted=row_count;
+
+  update public.private_ai_knowledge_sources
+     set content_hash=p_content_hash,
+         char_count=p_char_count,
+         chunk_count=inserted,
+         embedded_chunk_count=0,
+         status=case when inserted>0 then 'processing' else 'failed' end,
+         completed_at=null,
+         failure_count=0,
+         last_error=case when inserted>0 then null else 'No readable text found after HTML cleanup' end,
+         metadata=coalesce(p_metadata,'{}'::jsonb),
+         updated_at=now()
+   where id=p_source_id;
+
+  return inserted;
+end;
+$$;
+
+revoke all on function public.private_ai_claim_knowledge_chunks(integer,integer) from public,anon,authenticated;
+revoke all on function public.private_ai_set_chunk_embeddings(jsonb) from public,anon,authenticated;
+revoke all on function public.private_ai_set_memory_embeddings(jsonb) from public,anon,authenticated;
+revoke all on function public.private_ai_refresh_knowledge_progress(uuid[]) from public,anon,authenticated;
+revoke all on function public.private_ai_replace_knowledge_chunks(uuid,text,integer,jsonb,jsonb) from public,anon,authenticated;
+grant execute on function public.private_ai_claim_knowledge_chunks(integer,integer) to service_role;
+grant execute on function public.private_ai_set_chunk_embeddings(jsonb) to service_role;
+grant execute on function public.private_ai_set_memory_embeddings(jsonb) to service_role;
+grant execute on function public.private_ai_refresh_knowledge_progress(uuid[]) to service_role;
+grant execute on function public.private_ai_replace_knowledge_chunks(uuid,text,integer,jsonb,jsonb) to service_role;
+
+update public.private_ai_runtime_config
+set backend_version='v4',updated_at=now()
+where id=true;
+
+select cron.unschedule(jobid)
+from cron.job
+where jobname='uncensor-ai-background-worker';
+
+select cron.schedule(
+  'uncensor-ai-background-worker',
+  '10 seconds',
+  $$ select public.private_ai_dispatch_worker(); $$
+);
