@@ -100,10 +100,6 @@ async function ensureAttachmentBucket() {
   const created = await db.storage.createBucket(ATTACHMENT_BUCKET, {
     public: false,
     fileSizeLimit: 104857600,
-    allowedMimeTypes: [
-      'image/*','video/*','audio/*','application/pdf','text/*',
-      'application/json','application/javascript'
-    ],
   })
   if (created.error && !String(created.error.message || '').toLowerCase().includes('already')) throw created.error
 }
@@ -117,8 +113,11 @@ async function signUpload(req: Request) {
   const body = await req.json().catch(() => ({}))
   const name = safeFilename(String(body?.name || 'attachment'))
   const size = Number(body?.size || 0)
-  const mime = String(body?.mime || 'application/octet-stream').slice(0, 120)
+  const mime = String(body?.mime || 'application/octet-stream').slice(0, 120).toLowerCase()
   const kind = String(body?.kind || 'file').slice(0, 20)
+  const allowed = mime.startsWith('image/') || mime.startsWith('video/') || mime.startsWith('audio/') ||
+    mime.startsWith('text/') || ['application/pdf','application/json','application/javascript','application/octet-stream'].includes(mime)
+  if (!allowed) return json({ error: 'That file type is not supported yet.' }, 415)
   if (!Number.isFinite(size) || size <= 0) return json({ error: 'File size is required.' }, 400)
   if (size > 104857600) return json({ error: 'Attachment exceeds the 100 MB limit.' }, 413)
   const path = 'uploads/' + new Date().toISOString().slice(0,10) + '/' + crypto.randomUUID() + '/' + name
