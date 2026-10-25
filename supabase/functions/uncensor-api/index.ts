@@ -628,6 +628,16 @@ async function knowledgeFileCheck(req: Request) {
   if(!sha || !/^[a-f0-9]{64}$/.test(sha))return json({error:'Valid SHA-256 fingerprint required.'},400)
   if(!name || !Number.isFinite(size) || size<0)return json({error:'File name and size are required.'},400)
   const found=await findDuplicateFile(sha,name,size)
+  if(found?.reason==='legacy_name_size' && found.source?.id && !found.source?.file_sha256){
+    const claimed=await db.from('private_ai_knowledge_sources')
+      .update({file_sha256:sha,updated_at:new Date().toISOString()})
+      .eq('id',found.source.id).is('file_sha256',null)
+      .select('id,title,status,chunk_count,embedded_chunk_count,file_sha256,metadata').maybeSingle()
+    if(!claimed.error && claimed.data){
+      found.source=claimed.data
+      found.reason='legacy_upgraded_to_sha256'
+    }
+  }
   return json({
     ok:true,
     duplicate:Boolean(found),
@@ -694,7 +704,16 @@ async function knowledgeCreate(req: Request) {
   const fileSha=sourceType==='file' && part===1 ? String(metadata?.file_sha256||'').toLowerCase().trim() : ''
   if(fileSha){
     const found=await findDuplicateFile(fileSha,title,Number(metadata?.file_size||0))
-    if(found)return json({ok:true,duplicate:true,duplicate_reason:found.reason,source:found.source})
+    if(found){
+      if(found.reason==='legacy_name_size' && found.source?.id && !found.source?.file_sha256){
+        const claimed=await db.from('private_ai_knowledge_sources')
+          .update({file_sha256:fileSha,updated_at:new Date().toISOString()})
+          .eq('id',found.source.id).is('file_sha256',null)
+          .select('id,title,status,chunk_count,embedded_chunk_count,file_sha256,metadata').maybeSingle()
+        if(!claimed.error && claimed.data){found.source=claimed.data;found.reason='legacy_upgraded_to_sha256'}
+      }
+      return json({ok:true,duplicate:true,duplicate_reason:found.reason,source:found.source})
+    }
   }
   let text=String(body?.text || '')
   const isHtml=sourceType==='file' && (/\.html?$/i.test(title) || /\.html?$/i.test(String(metadata?.file_name || '')))
