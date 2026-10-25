@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#07090e" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Uncensor AI</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <aside id="sidebar" class="sidebar" aria-label="Conversations">
+      <div class="brand-row">
+        <div class="brand-mark">U</div>
+        <div class="brand-copy"><strong>Uncensor AI</strong><span>Private personal intelligence</span></div>
+        <button id="closeSidebar" class="icon-btn mobile-only" aria-label="Close sidebar">×</button>
+      </div>
+
+      <button id="newChat" class="new-chat-btn">＋ New chat</button>
+      <div class="sidebar-search"><span>⌕</span><input id="chatSearch" type="search" placeholder="Search chats" autocomplete="off" /></div>
+      <div class="sidebar-label"><span>Chats</span><small id="chatCount">0</small></div>
+      <div id="conversationList" class="conversation-list"></div>
+
+      <div class="sidebar-footer">
+        <button id="openKnowledge" class="sidebar-action">
+          <span class="sidebar-action-icon">▤</span>
+          <span><strong>Knowledge</strong><small id="knowledgeCount">0 sources</small></span>
+        </button>
+        <button id="openSettings" class="sidebar-action">
+          <span class="sidebar-action-icon">⚙</span>
+          <span><strong>Settings</strong><small id="providerStatus">Provider offline</small></span>
+        </button>
+      </div>
+    </aside>
+
+    <div id="backdrop" class="backdrop"></div>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <button id="menuBtn" class="icon-btn mobile-only" aria-label="Open sidebar">☰</button>
+        <button id="chatTitleButton" class="chat-title-button" title="Rename chat">New chat</button>
+        <div class="model-wrap">
+          <select id="modelSelect" aria-label="AI model">
+            <option value="deepseek/deepseek-v4.1-flash-1017">DeepSeek V4.1 · Balanced</option>
+            <option value="moonshotai/kimi-k3.1-pro">Kimi K3.1 Pro · Best</option>
+            <option value="z-ai/glm-5.3-flash">GLM 5.3 Flash · Fast</option>
+            <option value="qwen/qwen3.8-27b">Qwen 3.8 27B · Flexible</option>
+          </select>
+        </div>
+        <div class="topbar-right">
+          <button id="knowledgeToggle" class="chip active" title="Use your saved knowledge">Knowledge on</button>
+          <button id="exportChat" class="icon-btn desktop-action" title="Export current chat">⇩</button>
+          <button id="deleteChatTop" class="icon-btn desktop-action danger-hover" title="Permanently delete current chat">⌫</button>
+          <span id="statusDot" class="status-dot" title="Backend status"></span>
+        </div>
+      </header>
+
+      <section id="messages" class="messages" aria-live="polite"></section>
+
+      <section id="emptyState" class="empty-state">
+        <div class="hero-orb">U</div>
+        <h1>Ask directly. Learn deeply.</h1>
+        <p>A private AI workspace that can use your own knowledge without losing your conversations.</p>
+        <div class="prompt-grid">
+          <button class="prompt-card" data-prompt="Teach me this from first principles. Start simple, build to advanced, use examples, then quiz me."><span>Learn</span>Teach me anything</button>
+          <button class="prompt-card" data-prompt="Use my saved knowledge first. Tell me which sources mattered and explain the answer clearly."><span>Knowledge</span>Use my library</button>
+          <button class="prompt-card" data-prompt="Give me the strongest case for and against this idea. Separate facts, assumptions, and uncertainty."><span>Analyze</span>Stress-test an idea</button>
+          <button class="prompt-card" data-prompt="Turn this into a concrete step-by-step plan with priorities, tradeoffs, and next actions."><span>Plan</span>Make it actionable</button>
+        </div>
+      </section>
+
+      <div id="typing" class="typing hidden"><span></span><span></span><span></span><em>Thinking…</em></div>
+
+      <footer class="composer-wrap">
+        <div id="contextBar" class="context-bar hidden"></div>
+        <form id="composer" class="composer">
+          <button type="button" id="attachBtn" class="composer-icon" aria-label="Add knowledge" title="Add knowledge">＋</button>
+          <textarea id="input" rows="1" maxlength="50000" placeholder="Message Uncensor AI…" aria-label="Message"></textarea>
+          <button id="sendBtn" class="send-btn" type="submit" aria-label="Send">↑</button>
+        </form>
+        <div class="composer-meta"><span id="modeLabel">Direct mode</span><span>•</span><span id="charCount">0 / 50,000</span></div>
+      </footer>
+    </main>
+  </div>
+
+  <div id="knowledgeModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="knowledgeTitle">
+    <div class="modal-card knowledge-modal-card">
+      <div class="modal-head">
+        <div><h2 id="knowledgeTitle">Knowledge library</h2><p>Paste or upload large text-based sources. They are chunked, embedded, and retrieved only when relevant.</p></div>
+        <button class="icon-btn" data-close="knowledgeModal">×</button>
+      </div>
+      <div class="knowledge-layout">
+        <section class="knowledge-add">
+          <label>Title <input id="knowledgeTitleInput" type="text" maxlength="160" placeholder="e.g. Meta Ads Course — Module 4" /></label>
+          <label>Paste text <textarea id="knowledgeText" rows="13" maxlength="5000000" placeholder="Paste notes, transcripts, research, course material, code, or long documents here…"></textarea></label>
+          <div class="drop-row">
+            <input id="knowledgeFile" type="file" multiple accept=".txt,.md,.csv,.json,.html,.htm,.log,.js,.ts,.tsx,.jsx,.py,.sql,.css,text/*,application/json" />
+            <small>Multiple text-based files supported. Up to ~5 MB of text per source.</small>
+          </div>
+          <button id="saveKnowledge" class="primary-btn">Add to knowledge</button>
+          <div id="ingestProgress" class="progress-wrap hidden"><div class="progress-track"><div id="ingestProgressBar" class="progress-bar"></div></div><span id="ingestProgressText">Indexing…</span></div>
+        </section>
+        <section class="knowledge-sources">
+          <div class="section-row"><h3>Saved sources</h3><button id="refreshKnowledge" class="text-btn">Refresh</button></div>
+          <div class="knowledge-search"><input id="knowledgeSearch" type="search" placeholder="Search source titles" /></div>
+          <div id="knowledgeList" class="knowledge-list"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="modal-card settings-card">
+      <div class="modal-head">
+        <div><h2 id="settingsTitle">Settings</h2><p>Choose how the assistant responds. Secrets stay server-side.</p></div>
+        <button class="icon-btn" data-close="settingsModal">×</button>
+      </div>
+      <label class="setting-row"><span><strong>Use personal knowledge</strong><small>Search your library before answering.</small></span><input id="settingKnowledge" type="checkbox" checked /></label>
+      <label class="setting-row"><span><strong>Show source chips</strong><small>Show which saved sources were retrieved.</small></span><input id="settingSources" type="checkbox" checked /></label>
+      <label class="setting-stack"><span><strong>Response mode</strong><small>Direct is the low-friction default. Teacher favors explanations; Precise favors concise factual answers.</small></span>
+        <select id="responseMode">
+          <option value="direct">Direct</option><option value="teacher">Teacher</option><option value="precise">Precise</option><option value="deep">Deep analysis</option>
+        </select>
+      </label>
+      <label class="setting-stack"><span><strong>Custom instructions</strong><small>Added to the server-side assistant prompt for your requests.</small></span><textarea id="stylePrompt" rows="7"></textarea></label>
+      <div class="settings-info"><span>Status</span><strong id="settingsStatus">Checking…</strong></div>
+      <div class="settings-info"><span>Storage</span><strong>Chats + knowledge persist in Supabase</strong></div>
+      <button id="saveSettings" class="primary-btn">Save settings</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
