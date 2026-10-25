@@ -1,0 +1,7 @@
+.env
+.env.*
+!.env.example
+.dev.vars
+wrangler.toml
+.DS_Store
+node_modules/
