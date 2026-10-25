@@ -90,12 +90,13 @@ function chunkText(text: string) {
   return out
 }
 
-async function relevantContext(query: string) {
+async function relevantContext(query: string, includeKnowledge: boolean) {
   const vector = await embed(query)
-  const [knowledge, memories] = await Promise.all([
-    db.rpc('private_ai_match_chunks', { query_embedding: vector, match_count: 10, similarity_threshold: 0.25 }),
-    db.rpc('private_ai_match_memories', { query_embedding: vector, match_count: 12, similarity_threshold: 0.24 }),
-  ])
+  const memoryPromise = db.rpc('private_ai_match_memories', { query_embedding: vector, match_count: 12, similarity_threshold: 0.24 })
+  const knowledgePromise = includeKnowledge
+    ? db.rpc('private_ai_match_chunks', { query_embedding: vector, match_count: 10, similarity_threshold: 0.25 })
+    : Promise.resolve({ data: [], error: null } as any)
+  const [knowledge, memories] = await Promise.all([knowledgePromise, memoryPromise])
   return {
     knowledge: knowledge.error ? [] : (knowledge.data || []),
     memories: memories.error ? [] : (memories.data || []),
@@ -117,11 +118,13 @@ async function ensureConversation(id: string | null, firstMessage: string) {
 }
 
 async function recentMessages(conversationId: string, summaryThrough: number) {
-  const q = await db.from('private_ai_messages').select('role,content,created_at')
-    .eq('conversation_id', conversationId).order('created_at', { ascending: false }).limit(48)
+  let query = db.from('private_ai_messages').select('role,content,created_at')
+    .eq('conversation_id', conversationId).order('created_at', { ascending: true })
+  if (summaryThrough > 0) query = query.range(summaryThrough, summaryThrough + 47)
+  else query = query.limit(48)
+  const q = await query
   if (q.error) throw q.error
-  const rows = (q.data || []).reverse()
-  return rows.map((m: any) => ({ role: m.role, content: String(m.content || '').slice(0, 50000) }))
+  return (q.data || []).map((m: any) => ({ role: m.role, content: String(m.content || '').slice(0, 50000) }))
 }
 
 async function saveMessage(conversationId: string, role: string, content: string, model?: string, sources?: unknown[]) {
@@ -186,7 +189,7 @@ async function chat(req: Request) {
   const conversationId = String(conversation.id)
   await saveMessage(conversationId, 'user', text)
 
-  const ctx = await relevantContext(text)
+  const ctx = await relevantContext(text, body?.use_knowledge !== false)
   const recent = await recentMessages(conversationId, Number(conversation.summary_through_message_count || 0))
 
   const memoryText = (ctx.memories || []).slice(0, 12).map((m: any) =>
