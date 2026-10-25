@@ -235,13 +235,14 @@ returns table (
   read_ct integer,
   enqueued_at timestamptz,
   vt timestamptz,
-  message jsonb
+  message jsonb,
+  headers jsonb
 )
 language sql
 security definer
 set search_path = ''
 as $$
-  select * from pgmq.read('uncensor_jobs', visibility_seconds, greatest(1,least(qty,50)));
+  select * from pgmq.read('uncensor_jobs', visibility_seconds, greatest(1,least(qty,50)), '{}'::jsonb);
 $$;
 
 create or replace function public.private_ai_delete_job(job_id bigint)
