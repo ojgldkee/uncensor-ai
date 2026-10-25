@@ -53,7 +53,9 @@
         <button id="chatTitleButton" class="chat-title-button" title="Rename chat">New chat</button>
         <div class="model-wrap">
           <select id="modelSelect" aria-label="AI model">
-            <option value="deepseek/deepseek-v4.1-flash-1017">DeepSeek V4.1 · Balanced</option>
+            <option value="deepseek/deepseek-v4.1-flash-1017">DeepSeek V4.1 · Cheap</option>
+            <option value="cognitivecomputations/dolphin-mistral-24b-venice-edition">Uncensored · Venice</option>
+            <option value="nvidia/nemotron-3.5-super-vl">Media · Nemotron 3.5 VL</option>
             <option value="moonshotai/kimi-k3.1-pro">Kimi K3.1 Pro · Best</option>
             <option value="z-ai/glm-5.3-flash">GLM 5.3 Flash · Fast</option>
             <option value="qwen/qwen3.8-27b">Qwen 3.8 27B · Flexible</option>
@@ -85,14 +87,47 @@
 
       <footer class="composer-wrap">
         <div id="contextBar" class="context-bar hidden"></div>
+        <div id="attachmentTray" class="attachment-tray hidden"></div>
         <form id="composer" class="composer">
-          <button type="button" id="attachBtn" class="composer-icon" aria-label="Add knowledge" title="Add knowledge">＋</button>
+          <button type="button" id="attachBtn" class="composer-icon" aria-label="Attach" title="Attach">＋</button>
           <textarea id="input" rows="1" maxlength="50000" placeholder="Message Uncensor AI…" aria-label="Message"></textarea>
           <button id="sendBtn" class="send-btn" type="submit" aria-label="Send">↑</button>
         </form>
         <div class="composer-meta"><span id="modeLabel">Direct mode</span><span>•</span><span id="charCount">0 / 50,000</span></div>
       </footer>
     </main>
+  </div>
+
+
+  <div id="attachSheet" class="modal attachment-modal hidden" role="dialog" aria-modal="true" aria-labelledby="attachTitle">
+    <div class="attachment-sheet">
+      <div class="sheet-handle"></div>
+      <div class="modal-head attach-head">
+        <div><h2 id="attachTitle">Add something</h2><p>Attach it to this chat or save it permanently to your knowledge.</p></div>
+        <button class="icon-btn" data-close="attachSheet">×</button>
+      </div>
+      <div class="attachment-grid">
+        <button class="attachment-action" id="attachPhoto"><span>▧</span><strong>Photo</strong><small>Camera or library</small></button>
+        <button class="attachment-action" id="attachFile"><span>▤</span><strong>File</strong><small>PDF, text, documents</small></button>
+        <button class="attachment-action" id="attachVideo"><span>▶</span><strong>Video</strong><small>Analyze a clip</small></button>
+        <button class="attachment-action" id="attachWebsite"><span>↗</span><strong>Website</strong><small>Attach a URL</small></button>
+        <button class="attachment-action wide" id="attachKnowledge"><span>◆</span><strong>Add to Knowledge</strong><small>Save notes, files, transcripts, or research for future chats</small></button>
+      </div>
+      <input id="photoInput" type="file" accept="image/*" multiple hidden />
+      <input id="fileInput" type="file" accept=".pdf,.txt,.md,.csv,.json,.html,.htm,.log,.js,.ts,.tsx,.jsx,.py,.sql,.css,.doc,.docx,.ppt,.pptx,.xls,.xlsx,text/*,application/pdf,application/json" multiple hidden />
+      <input id="videoInput" type="file" accept="video/*,audio/*" multiple hidden />
+    </div>
+  </div>
+
+  <div id="websiteModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="websiteTitle">
+    <div class="modal-card settings-card website-card">
+      <div class="modal-head">
+        <div><h2 id="websiteTitle">Attach website</h2><p>Add a page to this chat. You can also save websites permanently into Knowledge later.</p></div>
+        <button class="icon-btn" data-close="websiteModal">×</button>
+      </div>
+      <label class="setting-stack"><span><strong>Website URL</strong><small>Use a public http or https page.</small></span><input id="websiteUrlInput" type="url" inputmode="url" placeholder="https://example.com/article" /></label>
+      <button id="addWebsiteAttachment" class="primary-btn">Attach website</button>
+    </div>
   </div>
 
   <div id="knowledgeModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="knowledgeTitle">
