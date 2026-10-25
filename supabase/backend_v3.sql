@@ -34,8 +34,10 @@ create table if not exists public.private_ai_messages (
   content text not null,
   model text,
   sources jsonb not null default '[]'::jsonb,
+  attachments jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now()
 );
+alter table public.private_ai_messages add column if not exists attachments jsonb not null default '[]'::jsonb;
 create index if not exists private_ai_messages_conversation_created_idx on public.private_ai_messages(conversation_id, created_at);
 create index if not exists private_ai_messages_sequence_idx on public.private_ai_messages(conversation_id, sequence_no);
 
