@@ -5,7 +5,8 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || ''
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
 const OPENROUTER_KEY = Deno.env.get('OPENROUTER_API_KEY') || ''
 const db = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } })
-const embedder = new Supabase.ai.Session('gte-small')
+const EMBED_MODEL = Deno.env.get('OPENROUTER_EMBED_MODEL') || 'openai/text-embedding-3-small'
+const EMBED_DIMENSIONS = 384
 const ATTACHMENT_BUCKET = 'private-ai-attachments'
 const MULTIMODAL_MODEL = 'nvidia/nemotron-3.5-super-vl'
 
@@ -41,8 +42,41 @@ async function authorized(req: Request) {
 }
 
 async function embed(text: string) {
-  const out = await embedder.run(text.slice(0, 7000), { mean_pool: true, normalize: true })
-  if (!Array.isArray(out) || out.length !== 384) throw new Error('Embedding returned an unexpected vector')
+  if (!OPENROUTER_KEY) throw new Error('OpenRouter key is not configured for embeddings')
+  const res = await fetch('https://openrouter.ai/api/v1/embeddings', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer ' + OPENROUTER_KEY,
+      'content-type': 'application/json',
+      'X-Title': 'Uncensor AI Retrieval',
+    },
+    body: JSON.stringify({
+      model: EMBED_MODEL,
+      input: String(text || '').slice(0,7000),
+      dimensions: EMBED_DIMENSIONS,
+      encoding_format: 'float',
+      provider: { allow_fallbacks: true },
+    }),
+    signal: AbortSignal.timeout(30000),
+  })
+  const raw = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(raw?.error?.message || ('Embedding API ' + res.status))
+  const out = raw?.data?.[0]?.embedding
+  if (!Array.isArray(out) || out.length !== EMBED_DIMENSIONS) throw new Error('Embedding API returned an unexpected vector')
+  const usage = raw?.usage || null
+  if (usage) {
+    try {
+      await db.from('private_ai_usage').insert({
+        conversation_id: null,
+        model: EMBED_MODEL,
+        operation: 'retrieval_embedding',
+        prompt_tokens: Number(usage.prompt_tokens || usage.total_tokens || 0),
+        completion_tokens: 0,
+        total_tokens: Number(usage.total_tokens || usage.prompt_tokens || 0),
+        cost_usd: Number(usage.cost || 0),
+      })
+    } catch {}
+  }
   return out
 }
 
