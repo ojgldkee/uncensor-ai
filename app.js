@@ -29,7 +29,103 @@ function newChat(close=true){if(state.sending&&state.abort)state.abort.abort();s
 function appendMessage(m,scroll=true){$('emptyState').classList.add('hidden');const root=$('messages'),el=document.createElement('article');el.className='message '+m.role;if(m.role==='assistant'){const sources=(m.sources||[]).slice(0,8);el.innerHTML='<div class="avatar">U</div><div class="message-content"><div class="message-body">'+md(m.content||'')+'</div>'+(state.showSources&&sources.length?'<div class="source-chips">'+sources.map(s=>'<span class="source-chip">'+esc(s.title||'Knowledge')+'</span>').join('')+'</div>':'')+'<div class="message-actions"><button class="copy">Copy</button></div></div>';const b=el.querySelector('.copy');b.onclick=()=>{navigator.clipboard.writeText(m.content||'');toast('Copied');};}else el.innerHTML='<div class="message-body">'+md(m.content||'')+'</div>';root.append(el);if(scroll)root.scrollTop=root.scrollHeight;return el;}
 function renderMessages(){const root=$('messages');root.innerHTML='';$('emptyState').classList.toggle('hidden',state.messages.length>0);state.messages.forEach(m=>appendMessage(m,false));root.scrollTop=root.scrollHeight;header();}
 
-async function send(text){if(state.sending){state.abort&&state.abort.abort();return;}const t=String(text||'').trim();if(!t)return;const user={role:'user',content:t};state.messages.push(user);appendMessage(user);$('input').value='';autoGrow();setSending(true);state.abort=new AbortController();const assistant={role:'assistant',content:'',sources:[]};let node=null;try{const key=ensureAccessKey();if(!key)throw new Error('Private access key is required.');const r=await fetch(endpoint('/api/chat'),{method:'POST',signal:state.abort.signal,headers:{'Content-Type':'application/json','x-uncensor-key':key},body:JSON.stringify({conversation_id:state.activeId,message:t,model:$('modelSelect').value,use_knowledge:state.knowledgeEnabled,style_prompt:state.style,response_mode:state.mode})});if(!r.ok){const d=await r.json().catch(()=>({}));throw Object.assign(new Error(d.error||'Chat request failed'),{data:d});}$('typing').classList.add('hidden');node=appendMessage(assistant);const reader=r.body.getReader(),dec=new TextDecoder();let buffer='';while(true){const part=await reader.read();if(part.done)break;buffer+=dec.decode(part.value,{stream:true});const events=buffer.split('\\n\\n');buffer=events.pop()||'';events.forEach(raw=>{if(!raw.startsWith('data:'))return;const p=raw.slice(5).trim();if(!p||p==='[DONE]')return;let e;try{e=JSON.parse(p);}catch{return;}if(e.type==='meta'){if(e.conversation_id)state.activeId=e.conversation_id;if(e.title)state.activeConversation=Object.assign({},state.activeConversation||{},{id:state.activeId,title:e.title});if(Array.isArray(e.sources))assistant.sources=e.sources;}if(e.type==='token'){assistant.content+=e.text||'';node.querySelector('.message-body').innerHTML=md(assistant.content);$('messages').scrollTop=$('messages').scrollHeight;}if(e.type==='error')throw new Error(e.error||'Model error');});}if(assistant.content.trim())state.messages.push(assistant);else node&&node.remove();await loadChats();await status();}catch(e){$('typing').classList.add('hidden');if(e.name==='AbortError'){if(node&&assistant.content.trim()){assistant.content+='\\n\\n_[Stopped]_';state.messages.push(assistant);}else if(node)node.remove();toast('Generation stopped');}else{assistant.content='Error: '+e.message;state.messages.push(assistant);if(node)node.querySelector('.message-body').innerHTML=md(assistant.content);else appendMessage(assistant);toast(e.data&&e.data.setup_required?'OpenRouter is intentionally disabled until configured.':e.message,3500);}}finally{state.abort=null;setSending(false);header();$('input').focus();}}
+async function send(text){
+  if(state.sending){state.abort&&state.abort.abort();return;}
+  const t=String(text||'').trim();if(!t)return;
+  const user={role:'user',content:t};state.messages.push(user);appendMessage(user);
+  $('input').value='';autoGrow();setSending(true);state.abort=new AbortController();
+  const assistant={role:'assistant',content:'',sources:[]};let node=null;
+  const safeMobile=/iPhone|iPad|iPod/i.test(navigator.userAgent);
+  try{
+    const key=ensureAccessKey();if(!key)throw new Error('Private access key is required.');
+    const r=await fetch(endpoint('/api/chat'),{
+      method:'POST',
+      signal:state.abort.signal,
+      headers:{'Content-Type':'application/json','x-uncensor-key':key},
+      body:JSON.stringify({
+        conversation_id:state.activeId,
+        message:t,
+        model:$('modelSelect').value,
+        use_knowledge:state.knowledgeEnabled,
+        style_prompt:state.style,
+        response_mode:state.mode,
+        stream:!safeMobile
+      })
+    });
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw Object.assign(new Error(d.error||'Chat request failed'),{data:d,status:r.status});}
+
+    if(safeMobile){
+      const d=await r.json();
+      assistant.content=String(d.content||'');
+      assistant.sources=Array.isArray(d.sources)?d.sources:[];
+      if(d.conversation_id)state.activeId=d.conversation_id;
+      if(d.title)state.activeConversation=Object.assign({},state.activeConversation||{},{id:state.activeId,title:d.title});
+      $('typing').classList.add('hidden');
+      if(!assistant.content.trim())throw new Error('The model returned an empty response.');
+      state.messages.push(assistant);
+      appendMessage(assistant);
+    }else{
+      $('typing').classList.add('hidden');
+      node=appendMessage(assistant);
+      const reader=r.body.getReader(),dec=new TextDecoder();let buffer='';
+      while(true){
+        const part=await reader.read();if(part.done)break;
+        buffer+=dec.decode(part.value,{stream:true});
+        const events=buffer.split('\n\n');buffer=events.pop()||'';
+        for(const raw of events){
+          if(!raw.startsWith('data:'))continue;
+          const p=raw.slice(5).trim();if(!p||p==='[DONE]')continue;
+          let e;try{e=JSON.parse(p);}catch{continue;}
+          if(e.type==='meta'){
+            if(e.conversation_id)state.activeId=e.conversation_id;
+            if(e.title)state.activeConversation=Object.assign({},state.activeConversation||{},{id:state.activeId,title:e.title});
+            if(Array.isArray(e.sources))assistant.sources=e.sources;
+          }
+          if(e.type==='token'){
+            assistant.content+=e.text||'';
+            node.querySelector('.message-body').innerHTML=md(assistant.content);
+            $('messages').scrollTop=$('messages').scrollHeight;
+          }
+          if(e.type==='error')throw new Error(e.error||'Model error');
+        }
+      }
+      if(assistant.content.trim())state.messages.push(assistant);else node&&node.remove();
+    }
+    await loadChats();await status();
+  }catch(e){
+    $('typing').classList.add('hidden');
+    if(e.name==='AbortError'){
+      if(node&&assistant.content.trim()){assistant.content+='\n\n_[Stopped]_';state.messages.push(assistant);}
+      else if(node)node.remove();
+      toast('Generation stopped');
+    }else{
+      let recovered=false;
+      try{
+        await loadChats();
+        if(state.activeId){
+          const d=await api('/api/conversations/'+encodeURIComponent(state.activeId));
+          const serverMessages=d.messages||[];
+          const latest=[...serverMessages].reverse().find(m=>m.role==='assistant'&&m.content);
+          if(latest){
+            state.activeConversation=d.conversation;
+            state.messages=serverMessages;
+            renderMessages();
+            recovered=true;
+            toast('Connection recovered — answer restored from the server.',3500);
+          }
+        }
+      }catch{}
+      if(!recovered){
+        assistant.content='Error: '+(e.message||'Request failed');
+        state.messages.push(assistant);
+        if(node)node.querySelector('.message-body').innerHTML=md(assistant.content);else appendMessage(assistant);
+        toast(e.data&&e.data.setup_required?'OpenRouter is not configured.':(e.message||'Request failed'),3500);
+      }
+    }
+  }finally{
+    state.abort=null;setSending(false);header();$('input').focus();
+  }
+}
 
 function renderKnowledge(){const root=$('knowledgeList');root.innerHTML='';const q=$('knowledgeSearch').value.trim().toLowerCase();const rows=state.knowledge.filter(x=>!q||String(x.title||'').toLowerCase().includes(q));$('knowledgeCount').textContent=state.knowledge.length+' source'+(state.knowledge.length===1?'':'s');if(!rows.length){root.innerHTML='<div class="empty-list">'+(q?'No matching sources.':'Nothing saved yet.')+'</div>';return;}rows.forEach(x=>{const total=Number(x.chunk_count||0),done=Number(x.embedded_chunk_count||0),pct=total?Math.round((done/total)*100):0,status=String(x.status||'queued');const el=document.createElement('div');el.className='knowledge-item'+(x.enabled===false?' disabled':'');el.innerHTML='<div class="knowledge-item-head"><div><strong>'+esc(x.title||'Untitled')+'</strong><small>'+Number(x.char_count||0).toLocaleString()+' chars · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks indexed · '+esc(status)+'</small>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'</div><div class="knowledge-actions"><button class="toggle">'+(x.enabled===false?'○':'●')+'</button><button class="rename">✎</button><button class="delete danger-hover">×</button></div></div>';el.querySelector('.toggle').onclick=async()=>{await api('/api/knowledge/'+encodeURIComponent(x.id),{method:'PATCH',body:JSON.stringify({enabled:x.enabled===false})});loadKnowledge();};el.querySelector('.rename').onclick=async()=>{const n=prompt('Rename knowledge source',x.title||'');if(n&&n.trim()){await api('/api/knowledge/'+encodeURIComponent(x.id),{method:'PATCH',body:JSON.stringify({title:n.trim().slice(0,160)})});loadKnowledge();}};el.querySelector('.delete').onclick=async()=>{if(confirm('Permanently delete “'+x.title+'” and every indexed chunk?')){await api('/api/knowledge/'+encodeURIComponent(x.id),{method:'DELETE'});await loadKnowledge();toast('Knowledge source deleted');}};root.append(el);});}
 
