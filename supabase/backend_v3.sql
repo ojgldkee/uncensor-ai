@@ -177,11 +177,11 @@ returns table (
 language sql stable set search_path = ''
 as $$
   select c.id,c.source_id,s.title,c.content,c.chunk_index,
-         1 - (c.embedding <=> query_embedding) as similarity
+         1 - (c.embedding OPERATOR(extensions.<=>) query_embedding) as similarity
   from public.private_ai_knowledge_chunks c
   join public.private_ai_knowledge_sources s on s.id=c.source_id
   where s.status='ready' and s.enabled=true and c.embedding is not null
-    and 1 - (c.embedding <=> query_embedding) >= similarity_threshold
+    and 1 - (c.embedding OPERATOR(extensions.<=>) query_embedding) >= similarity_threshold
   order by c.embedding <=> query_embedding
   limit greatest(1,least(match_count,30));
 $$;
@@ -203,10 +203,10 @@ returns table (
 language sql stable set search_path = ''
 as $$
   select m.id,m.memory_key,m.content,m.category,m.importance,m.pinned,
-         1 - (m.embedding <=> query_embedding) as similarity
+         1 - (m.embedding OPERATOR(extensions.<=>) query_embedding) as similarity
   from public.private_ai_memories m
   where m.active=true and m.embedding is not null
-    and (m.pinned=true or 1 - (m.embedding <=> query_embedding) >= similarity_threshold)
+    and (m.pinned=true or 1 - (m.embedding OPERATOR(extensions.<=>) query_embedding) >= similarity_threshold)
   order by m.pinned desc, m.importance desc, m.embedding <=> query_embedding
   limit greatest(1,least(match_count,30));
 $$;
