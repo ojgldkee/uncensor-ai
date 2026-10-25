@@ -640,10 +640,13 @@ async function createKnowledgeRecord(title: string, text: string, sourceType = '
   if (!text.trim()) return json({ error: 'No readable text found.' }, 400)
   if (text.length > 5000000) return json({ error: 'Source exceeds 5,000,000 characters.' }, 413)
   const hash = await contentHash(text)
-  const existing = await db.from('private_ai_knowledge_sources')
-    .select('id,title,status,chunk_count,embedded_chunk_count').eq('content_hash', hash).maybeSingle()
-  if (existing.error) throw existing.error
-  if (existing.data) return json({ ok: true, duplicate: true, source: existing.data })
+  const fileFingerprint=sourceType==='file' && Boolean(metadata?.file_sha256)
+  if(!fileFingerprint){
+    const existing = await db.from('private_ai_knowledge_sources')
+      .select('id,title,status,chunk_count,embedded_chunk_count').eq('content_hash', hash).maybeSingle()
+    if (existing.error) throw existing.error
+    if (existing.data) return json({ ok: true, duplicate: true, duplicate_reason:'content_hash', source: existing.data })
+  }
 
   const parts = chunkText(text)
   const created = await db.from('private_ai_knowledge_sources').insert({
