@@ -378,14 +378,21 @@ async function knowledgeCreate(req: Request) {
 
 async function statusRoute() {
   const spend = await rollingSpend()
+  const cfg = await db.from('private_ai_runtime_config')
+    .select('last_worker_run_at,last_worker_success_at,last_worker_error,backend_version')
+    .eq('id', true).maybeSingle()
   return json({
     ok: true,
     backend: 'supabase-edge',
+    backend_version: cfg.data?.backend_version || 'v3',
     openrouter_enabled: Boolean(OPENROUTER_KEY),
     memory_enabled: true,
     rolling_summaries_enabled: true,
     background_indexing_enabled: true,
     duplicate_detection_enabled: true,
+    last_worker_run_at: cfg.data?.last_worker_run_at || null,
+    last_worker_success_at: cfg.data?.last_worker_success_at || null,
+    last_worker_error: cfg.data?.last_worker_error || null,
     rolling_24h_spend: spend,
     rolling_24h_cap: DAILY_CAP,
     default_model: DEFAULT_MODEL,
