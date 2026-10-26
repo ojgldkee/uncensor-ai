@@ -242,11 +242,16 @@ function renderKnowledge(){
     return;
   }
   rows.forEach(x=>{
-    const total=Number(x.chunk_count||0),done=Number(x.embedded_chunk_count||0),pct=total?Math.round((done/total)*100):0,status=String(x.status||'queued'),collection=knowledgeCollection(x);
-    const typeLabel=x.source_type==='website'?'Website':x.source_type==='file'?'File':'Notes';
+    const total=Number(x.chunk_count||0),done=Number(x.embedded_chunk_count||0),status=String(x.status||'queued'),collection=knowledgeCollection(x),meta=x.metadata||{};
+    const media=['video','audio'].includes(String(x.source_type||''));
+    const pct=media&&status!=='ready'?Math.max(3,Number(meta.media_progress||0)):(total?Math.round((done/total)*100):(status==='ready'?100:3));
+    const typeLabel=x.source_type==='website'?'Website':x.source_type==='file'?'File':x.source_type==='video'?'Video':x.source_type==='audio'?'Audio':'Notes';
+    const typeIcon=x.source_type==='website'?'↗':x.source_type==='file'?'▤':x.source_type==='video'?'▶':x.source_type==='audio'?'♪':'✎';
     const partCount=(x._items||[]).length;
+    const mediaDetail=media?(' · '+esc(String(meta.media_stage||status).replaceAll('_',' '))+(meta.duration_seconds?' · '+Math.floor(Number(meta.duration_seconds)/60)+':'+String(Math.floor(Number(meta.duration_seconds)%60)).padStart(2,'0'):'')+(meta.reference_sections?' · '+Number(meta.reference_sections)+' refs':'')):'';
+    const baseDetail=media?(formatBytes(Number(meta.file_size||0))+mediaDetail):(Number(x.char_count||0).toLocaleString()+' chars · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks');
     const el=document.createElement('div');el.className='knowledge-item knowledge-library-item'+(x.enabled===false?' disabled':'');
-    el.innerHTML='<div class="knowledge-item-main"><div class="knowledge-source-icon">'+(x.source_type==='website'?'↗':x.source_type==='file'?'▤':'✎')+'</div><div class="knowledge-source-copy"><div class="knowledge-source-title-row"><strong>'+esc(x.title||'Untitled')+'</strong>'+(collection?'<span class="knowledge-collection-chip">'+esc(collection)+'</span>':'')+'</div><small>'+typeLabel+(partCount>1?' · '+partCount+' segments':'')+' · '+Number(x.char_count||0).toLocaleString()+' chars · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks · '+esc(status)+'</small>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'</div></div><div class="knowledge-actions"><button class="toggle" title="'+(x.enabled===false?'Enable':'Disable')+'">'+(x.enabled===false?'○':'●')+'</button><button class="rename" title="Rename">✎</button><button class="delete danger-hover" title="Delete permanently">×</button></div>';
+    el.innerHTML='<div class="knowledge-item-main"><div class="knowledge-source-icon">'+typeIcon+'</div><div class="knowledge-source-copy"><div class="knowledge-source-title-row"><strong>'+esc(x.title||'Untitled')+'</strong>'+(collection?'<span class="knowledge-collection-chip">'+esc(collection)+'</span>':'')+'</div><small>'+typeLabel+(partCount>1?' · '+partCount+' segments':'')+' · '+baseDetail+' · '+esc(status)+'</small>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'</div></div><div class="knowledge-actions"><button class="toggle" title="'+(x.enabled===false?'Enable':'Disable')+'">'+(x.enabled===false?'○':'●')+'</button><button class="rename" title="Rename">✎</button><button class="delete danger-hover" title="Delete permanently">×</button></div>';
     const items=x._items||[x];
     el.querySelector('.toggle').onclick=async()=>{const value=x.enabled===false;await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id),{method:'PATCH',body:JSON.stringify({enabled:value})})));loadKnowledge();};
     el.querySelector('.rename').onclick=async()=>{const n=prompt('Rename knowledge source',x.title||'');if(n&&n.trim()){await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id),{method:'PATCH',body:JSON.stringify({title:n.trim().slice(0,160)})})));loadKnowledge();}};
@@ -294,10 +299,17 @@ function updateKnowledgeUploadRows(){
     const hasError=items.find(x=>x.status==='failed'||x.last_error);
     if(hasError){setKnowledgeFileStatus(row,'failed',100,hasError.last_error||'Indexing failed','failed');continue;}
     if(items.length===row.sourceIds.length && items.every(x=>x.status==='ready')){
-      setKnowledgeFileStatus(row,'ready',100,total+' / '+total+' chunks indexed','ready');
+      setKnowledgeFileStatus(row,'ready',100,total+' / '+total+' reference chunks indexed','ready');
     }else{
-      const pct=70+(total?Math.round((done/total)*30):0);
-      setKnowledgeFileStatus(row,'indexing',pct,done+' / '+total+' chunks indexed','indexing');
+      const mediaItem=items.find(x=>['video','audio'].includes(String(x.source_type||'')));
+      if(mediaItem){
+        const m=mediaItem.metadata||{},stage=String(m.media_stage||'processing').replaceAll('_',' ');
+        const pct=Math.max(Number(m.media_progress||15),total?80+Math.round((done/total)*20):15);
+        setKnowledgeFileStatus(row,'processing',pct,(m.reference_sections?Number(m.reference_sections)+' reference sections · ':'')+stage,stage);
+      }else{
+        const pct=70+(total?Math.round((done/total)*30):0);
+        setKnowledgeFileStatus(row,'indexing',pct,done+' / '+total+' chunks indexed','indexing');
+      }
     }
   }
 }
@@ -389,6 +401,59 @@ function cleanHtmlClient(raw){
       .trim();
   }catch{return raw;}
 }
+function signedUploadFile(file,url,onProgress){
+  return new Promise((resolve,reject)=>{
+    const xhr=new XMLHttpRequest();xhr.open('PUT',url,true);xhr.setRequestHeader('x-upsert','false');
+    xhr.upload.onprogress=e=>{if(e.lengthComputable&&onProgress)onProgress(e.loaded/e.total);};
+    xhr.onerror=()=>reject(new Error('Private upload failed'));
+    xhr.onload=()=>xhr.status>=200&&xhr.status<300?resolve(true):reject(new Error('Private upload failed ('+xhr.status+')'));
+    const fd=new FormData();fd.append('cacheControl','3600');fd.append('',file);xhr.send(fd);
+  });
+}
+function previewKnowledgeMedia(file){
+  const root=$('knowledgeMediaPreview');
+  if(!file){root.classList.add('hidden');root.innerHTML='';return;}
+  root.classList.remove('hidden');
+  const kind=file.type.startsWith('audio/')?'Audio':'Video';
+  root.innerHTML='<strong>'+esc(file.name)+'</strong><small>'+kind+' · '+formatBytes(file.size)+'</small><span>Will become a permanent timestamped reference source.</span>';
+}
+async function ingestKnowledgeMedia(){
+  const file=$('knowledgeMediaFile').files?.[0];
+  if(!file){toast('Choose a video or audio file first.');return;}
+  if(file.size>100*1024*1024){toast('This upload is over the current 100 MB limit.',4500);return;}
+  const btn=$('saveKnowledgeMedia');btn.disabled=true;
+  stageKnowledgeFiles([file]);const row=state.knowledgeFileUploads[0];$('ingestProgress').classList.remove('hidden');
+  try{
+    setKnowledgeFileStatus(row,'fingerprinting',3,'Computing exact SHA-256','checking');
+    const sha=await sha256File(file);row.sha256=sha;
+    setKnowledgeFileStatus(row,'checking',7,'Checking for an identical source','duplicate check');
+    const check=await api('/api/knowledge/file-check',{method:'POST',body:JSON.stringify({sha256:sha,name:file.name,size:file.size})});
+    if(check.duplicate){setKnowledgeFileStatus(row,'duplicate',100,'Already in Knowledge: '+String(check.source?.title||file.name),'duplicate blocked');toast('That exact media file is already in Knowledge.');return;}
+
+    setKnowledgeFileStatus(row,'uploading',10,'Uploading into private Storage','uploading 0%');
+    const signed=await api('/api/uploads/sign',{method:'POST',body:JSON.stringify({name:file.name,mime:file.type||'application/octet-stream',size:file.size,kind:file.type.startsWith('audio/')?'audio':'video'})});
+    await signedUploadFile(file,signed.signed_url,p=>{
+      const pct=10+Math.round(p*35);setKnowledgeFileStatus(row,'uploading',pct,'Uploading into private Storage','uploading '+Math.round(p*100)+'%');
+    });
+
+    setKnowledgeFileStatus(row,'queued',48,'Starting private media processing','queued');
+    const created=await api('/api/knowledge/media',{method:'POST',body:JSON.stringify({
+      title:file.name,path:signed.path,mime:file.type||'video/mp4',size:file.size,sha256:sha,
+      mode:$('knowledgeMediaMode').value,collection:$('knowledgeCollection').value.trim().slice(0,80)
+    })});
+    if(created.duplicate){
+      await api('/api/uploads/discard',{method:'POST',body:JSON.stringify({path:signed.path})}).catch(()=>{});
+      setKnowledgeFileStatus(row,'duplicate',100,'Already exists in Knowledge','duplicate blocked');return;
+    }
+    row.sourceIds=[created.source_id];
+    setKnowledgeFileStatus(row,'processing',52,'Safe to close this browser — processing continues on the server','processing');
+    $('knowledgeMediaFile').value='';previewKnowledgeMedia(null);
+    await loadKnowledge();switchKnowledgeTab('library');toast('Media uploaded. Building timestamped Knowledge in the background.',4500);
+  }catch(e){
+    setKnowledgeFileStatus(row,'failed',100,e.message||'Media upload failed','failed');toast(e.message||'Media upload failed',4500);
+  }finally{btn.disabled=false;scheduleKnowledgePoll();}
+}
+
 async function ingestFileKnowledge(){
   const files=[...$('knowledgeFile').files];
   if(!files.length){toast('Choose one or more files first.');return;}
@@ -491,7 +556,7 @@ $('videoInput').onchange=e=>addFiles(e.target.files);
 $('addWebsiteAttachment').onclick=addWebsiteAttachment;
 $('websiteUrlInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();addWebsiteAttachment();}};
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));document.querySelectorAll('.modal').forEach(m=>m.onclick=e=>{if(e.target===m)closeModal(m.id);});
-$('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;$('knowledgeFile').onchange=e=>stageKnowledgeFiles(e.target.files);$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
+$('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;$('knowledgeFile').onchange=e=>stageKnowledgeFiles(e.target.files);$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('knowledgeMediaFile').onchange=e=>previewKnowledgeMedia(e.target.files?.[0]||null);$('saveKnowledgeMedia').onclick=ingestKnowledgeMedia;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
 $('webToggle').onclick=()=>{state.webResearch=!state.webResearch;localStorage.setItem('uncensor.webResearch',String(state.webResearch));syncSettings();if(state.webResearch&&!state.webResearchEnabled)toast('Web Research is temporarily unavailable.',4500);};$('knowledgeToggle').onclick=()=>{state.knowledgeEnabled=!state.knowledgeEnabled;localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));syncSettings();};
 $('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);$('revokeThisDevice').onclick=revokeCurrentDevice;$('rotateRecoveryKey').onclick=rotateRecoveryKeyFromDevice;$('copyRecoveryKey').onclick=()=>{const v=$('recoveryKeyValue').textContent||'';if(v){navigator.clipboard.writeText(v);toast('Recovery key copied');}};
 $('saveSettings').onclick=async()=>{state.knowledgeEnabled=$('settingKnowledge').checked;state.showSources=$('settingSources').checked;state.mode=$('responseMode').value;state.style=$('stylePrompt').value.trim()||DEFAULT_STYLE;const k=$('accessKeyInput').value.trim();if(k)localStorage.setItem('uncensor.accessKey',k);localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));localStorage.setItem('uncensor.sources',String(state.showSources));localStorage.setItem('uncensor.mode',state.mode);localStorage.setItem('uncensor.style',state.style);try{if(accessKey())await enrollDeviceSession();syncSettings();closeModal('settingsModal');renderMessages();toast('Settings saved · device enrolled');await Promise.all([loadChats(),loadKnowledge(),loadMemories(),status(),health()]);}catch(e){toast(e.message||'Could not enroll device',4500);syncSettings();}};
