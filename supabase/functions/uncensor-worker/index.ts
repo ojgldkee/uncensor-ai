@@ -457,6 +457,20 @@ async function processMediaSource(job:QueueJob){
     })
     if(replaced.error)throw replaced.error
 
+    // Privacy default: once searchable references exist, remove the raw media object.
+    const removed=await db.storage.from(ATTACHMENT_BUCKET).remove([path])
+    if(removed.error)console.error('raw media cleanup failed',removed.error)
+    else{
+      meta.storage_path=''
+      meta.original_deleted=true
+      meta.original_deleted_at=new Date().toISOString()
+      const cleaned=await db.from('private_ai_knowledge_sources').update({
+        metadata:{...meta,media_stage:'indexing',media_progress:82,reference_sections:payload.length},
+        updated_at:new Date().toISOString()
+      }).eq('id',sourceId)
+      if(cleaned.error)console.error('media metadata cleanup failed',cleaned.error)
+    }
+
     if(transcript?.usage){
       try{await db.from('private_ai_usage').insert({
         conversation_id:null,model:MEDIA_TRANSCRIBE_MODEL,operation:'media_transcription',
