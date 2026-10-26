@@ -1054,6 +1054,50 @@ async function moveKnowledgeSource(sourceId:string,target:string,conversationId=
   throw new Error('Invalid Knowledge target')
 }
 
+async function bulkMoveKnowledgeSources(sourceIds:string[],target:string,conversationId=''){
+  const logical=[...new Set((sourceIds||[]).map(x=>String(x||'').trim()).filter(Boolean))].slice(0,500)
+  if(!logical.length)throw new Error('No Knowledge sources selected')
+
+  const expanded=new Set<string>()
+  for(const sourceId of logical){
+    const ids=await groupedKnowledgeIds(sourceId)
+    ids.forEach((id:string)=>expanded.add(id))
+  }
+  const ids=[...expanded]
+  if(!ids.length)throw new Error('No Knowledge sources found')
+
+  if(target==='global'||target==='unassigned'){
+    const u=await db.from('private_ai_knowledge_sources')
+      .update({global_enabled:true,updated_at:new Date().toISOString()}).in('id',ids)
+    if(u.error)throw u.error
+    const d=await db.from('private_ai_chat_knowledge').delete().in('source_id',ids)
+    if(d.error)throw d.error
+    return {logical_count:logical.length,physical_count:ids.length}
+  }
+
+  if(target==='chat'){
+    if(!conversationId)throw new Error('conversation_id is required')
+    const conv=await db.from('private_ai_conversations').select('id').eq('id',conversationId).maybeSingle()
+    if(conv.error)throw conv.error
+    if(!conv.data)throw new Error('Chat not found')
+
+    const u=await db.from('private_ai_knowledge_sources')
+      .update({global_enabled:false,updated_at:new Date().toISOString()}).in('id',ids)
+    if(u.error)throw u.error
+    const clear=await db.from('private_ai_chat_knowledge').delete().in('source_id',ids)
+    if(clear.error)throw clear.error
+
+    for(let i=0;i<ids.length;i+=500){
+      const rows=ids.slice(i,i+500).map(id=>({conversation_id:conversationId,source_id:id}))
+      const ins=await db.from('private_ai_chat_knowledge').upsert(rows,{onConflict:'conversation_id,source_id'})
+      if(ins.error)throw ins.error
+    }
+    return {logical_count:logical.length,physical_count:ids.length}
+  }
+
+  throw new Error('Invalid Knowledge target')
+}
+
 async function readKnowledgeSource(id:string) {
   const q=await db.from('private_ai_knowledge_sources_read')
     .select('id,title,status,chunk_count,embedded_chunk_count,file_sha256,metadata,source_type,enabled,global_enabled,char_count,created_at,updated_at')
@@ -1382,6 +1426,16 @@ Deno.serve(async (req) => {
         if (d.error) throw d.error
         return json({ ok: true, permanent: true })
       }
+    }
+
+    if(path==='/api/knowledge/bulk-move'&&req.method==='POST'){
+      const body=await req.json().catch(()=>({}))
+      const sourceIds=Array.isArray(body?.source_ids)?body.source_ids:[]
+      if(sourceIds.length>500)return json({error:'Select at most 500 Knowledge sources at once.'},400)
+      const target=String(body?.target||'').trim()
+      const conversationId=String(body?.conversation_id||'').trim()
+      const moved=await bulkMoveKnowledgeSources(sourceIds,target,conversationId)
+      return json({ok:true,target,...moved})
     }
 
     const moveSource=path.match(/^\/api\/knowledge\/([^/]+)\/move$/)
