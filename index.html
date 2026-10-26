@@ -15,8 +15,8 @@
     .hidden{display:none!important}
     #app{min-height:100dvh}
   </style>
-  <link rel="manifest" href="./manifest.webmanifest?v=20" />
-  <link rel="stylesheet" href="./styles.css?v=20" />
+  <link rel="manifest" href="./manifest.webmanifest?v=21" />
+  <link rel="stylesheet" href="./styles.css?v=21" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -257,7 +257,7 @@
           <option value="direct">Direct</option><option value="teacher">Teacher</option><option value="precise">Precise</option><option value="deep">Deep analysis</option>
         </select>
       </label>
-      <label class="setting-stack"><span><strong>Recovery / master key</strong><small>Optional fallback for enrolling a new browser. A device token from your phone will not work here. The safer method is the one-time link code below.</small></span><input id="accessKeyInput" type="password" autocomplete="off" placeholder="Enter recovery/master key (optional)" /></label>
+      <label class="setting-stack"><span><strong>Private login key</strong><small>Use the same private login key to enroll any of your devices. After login, each device gets its own revocable session.</small></span><input id="accessKeyInput" type="password" autocomplete="off" placeholder="Enter private login key" /></label>
       <div class="settings-info"><span>Device security</span><strong id="deviceSessionStatus">Checking…</strong></div>
       <div class="device-link-card">
         <div><strong>Link another device</strong><small>On an enrolled phone/computer, generate a one-time 10-minute code. Enter that code on the new device. No master key or device token needs to be copied.</small></div>
@@ -299,7 +299,7 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="./config.js?v=20"></script>
-  <script src="./app.js?v=20" defer></script>
+  <script src="./config.js?v=21"></script>
+  <script src="./app.js?v=21" defer></script>
 </body>
 </html>
