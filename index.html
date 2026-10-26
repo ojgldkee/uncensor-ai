@@ -15,8 +15,8 @@
     .hidden{display:none!important}
     #app{min-height:100dvh}
   </style>
-  <link rel="manifest" href="./manifest.webmanifest?v=22" />
-  <link rel="stylesheet" href="./styles.css?v=22" />
+  <link rel="manifest" href="./manifest.webmanifest?v=23" />
+  <link rel="stylesheet" href="./styles.css?v=23" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -147,6 +147,7 @@
       <div class="knowledge-hub-toolbar">
         <div class="knowledge-tabs">
           <button id="knowledgeLibraryTab" class="knowledge-tab active">This chat</button>
+          <button id="knowledgeGlobalTab" class="knowledge-tab">Global</button>
           <button id="knowledgeUnassignedTab" class="knowledge-tab">Unassigned</button>
           <button id="knowledgeAddTab" class="knowledge-tab">＋ Add source</button>
         </div>
@@ -215,7 +216,11 @@
             <div class="knowledge-add-card-icon">▶</div>
             <h3>Video / audio reference</h3>
             <p>Turn courses, screen recordings, webinars, podcasts, and ad-training videos into permanent timestamped Knowledge.</p>
-            <input id="knowledgeMediaFile" type="file" accept="video/*,audio/*,.mp4,.mov,.m4v,.webm,.mp3,.m4a,.wav,.aac,.ogg" />
+            <input id="knowledgeMediaFile" class="native-file-input" type="file" accept="video/*,audio/*,.mp4,.mov,.m4v,.webm,.mp3,.m4a,.wav,.aac,.ogg" />
+            <label id="knowledgeMediaDropzone" for="knowledgeMediaFile" class="upload-dropzone">
+              <span class="upload-dropzone-icon">↑</span>
+              <span><strong>Choose video or audio</strong><small id="knowledgeMediaFileLabel">or drag & drop it here · up to 100 MB</small></span>
+            </label>
             <label class="media-mode-label">Processing mode
               <select id="knowledgeMediaMode">
                 <option value="full">Transcript + visual analysis</option>
@@ -231,7 +236,11 @@
             <div class="knowledge-add-card-icon">▤</div>
             <h3>Text files</h3>
             <p>Upload multiple text, Markdown, CSV, JSON, HTML, or code files.</p>
-            <input id="knowledgeFile" type="file" multiple accept=".txt,.md,.csv,.json,.html,.htm,.log,.js,.ts,.tsx,.jsx,.py,.sql,.css,text/*,application/json" />
+            <input id="knowledgeFile" class="native-file-input" type="file" multiple accept=".txt,.md,.csv,.json,.html,.htm,.log,.js,.ts,.tsx,.jsx,.py,.sql,.css,text/*,application/json" />
+            <label id="knowledgeFileDropzone" for="knowledgeFile" class="upload-dropzone">
+              <span class="upload-dropzone-icon">↑</span>
+              <span><strong>Choose text files</strong><small id="knowledgeTextFileLabel">or drag & drop multiple files here · up to 100 MB each</small></span>
+            </label>
             <small>Exact duplicate files are blocked before indexing using a SHA-256 fingerprint. Large text/HTML/code files are automatically cleaned, segmented, and indexed as one logical source. Up to 100 MB per file.</small>
             <button id="saveKnowledgeFiles" class="secondary-btn">Add selected files</button>
           </div>
@@ -242,6 +251,43 @@
           <span id="ingestProgressText">Indexing…</span>
         </div>
       </section>
+    </div>
+  </div>
+
+  <div id="renameChatModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="renameChatTitle">
+    <div class="modal-card compact-modal-card">
+      <div class="modal-head">
+        <div><h2 id="renameChatTitle">Name this chat</h2><p>Give specialist chats short, obvious names like Crypto Research or Meta Ads.</p></div>
+        <button class="icon-btn" data-close="renameChatModal">×</button>
+      </div>
+      <label class="setting-stack"><span><strong>Chat name</strong><small>Up to 120 characters.</small></span>
+        <input id="renameChatInput" type="text" maxlength="120" autocomplete="off" placeholder="e.g. Ecom Strategy" />
+      </label>
+      <div class="modal-footer-actions">
+        <button id="cancelRenameChat" class="secondary-btn" type="button">Cancel</button>
+        <button id="saveRenameChat" class="primary-btn" type="button">Save name</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="moveKnowledgeModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="moveKnowledgeTitle">
+    <div class="modal-card compact-modal-card">
+      <div class="modal-head">
+        <div><h2 id="moveKnowledgeTitle">Move Knowledge source</h2><p id="moveKnowledgeSourceName">Choose where this source should be available.</p></div>
+        <button class="icon-btn" data-close="moveKnowledgeModal">×</button>
+      </div>
+      <label class="setting-stack"><span><strong>Destination</strong><small>Global = every chat. Chat = only that specialist chat. Unassigned = stored but never retrieved.</small></span>
+        <select id="moveKnowledgeDestination"></select>
+      </label>
+      <div class="scope-explainer">
+        <span><b>Global</b> Every chat can retrieve it.</span>
+        <span><b>Specific chat</b> Only that chat can retrieve it.</span>
+        <span><b>Unassigned</b> Kept safely but not used.</span>
+      </div>
+      <div class="modal-footer-actions">
+        <button id="cancelMoveKnowledge" class="secondary-btn" type="button">Cancel</button>
+        <button id="confirmMoveKnowledge" class="primary-btn" type="button">Move source</button>
+      </div>
     </div>
   </div>
 
@@ -305,7 +351,7 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="./config.js?v=22"></script>
-  <script src="./app.js?v=22" defer></script>
+  <script src="./config.js?v=23"></script>
+  <script src="./app.js?v=23" defer></script>
 </body>
 </html>
