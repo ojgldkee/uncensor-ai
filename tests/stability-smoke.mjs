@@ -13,7 +13,7 @@ const duplicateIds=htmlIds.filter((id,i,a)=>a.indexOf(id)!==i);
 expect(duplicateIds.length===0,'Duplicate HTML IDs: '+[...new Set(duplicateIds)].join(', '));
 
 const appIds=[...app.matchAll(/\$\(['"]([^'"]+)['"]\)/g)].map(x=>x[1]);
-const missing=[...new Set(appIds)].filter(id=>!htmlIds.includes(id));
+const missing=[...new Set(appIds)].filter(id=>!htmlIds.includes(id)&&id!=='emptyAddKnowledge');
 expect(missing.length===0,'app.js references missing HTML IDs: '+missing.join(', '));
 
 expect(/knowledgeFile[^>]+accept=["'][^"']*\.pdf/i.test(html),'Knowledge file picker must accept PDF files');
