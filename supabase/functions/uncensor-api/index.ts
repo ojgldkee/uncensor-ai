@@ -1231,19 +1231,30 @@ async function createKnowledgeRecord(title: string, text: string, sourceType = '
     throw created.error
   }
 
-  for (let i=0;i<parts.length;i+=150) {
-    const rows = await Promise.all(parts.slice(i,i+150).map(async (content,j)=>({
-      source_id: created.data.id,
-      chunk_index: i+j,
-      content,
-      content_hash: await contentHash(content),
-    })))
-    const ins = await db.from('private_ai_knowledge_chunks').insert(rows)
-    if (ins.error) throw ins.error
+  try {
+    for (let i=0;i<parts.length;i+=150) {
+      const rows = await Promise.all(parts.slice(i,i+150).map(async (content,j)=>({
+        source_id: created.data.id,
+        chunk_index: i+j,
+        content,
+        content_hash: await contentHash(content),
+      })))
+      const ins = await db.from('private_ai_knowledge_chunks').insert(rows)
+      if (ins.error) throw ins.error
+    }
+    const marked=await db.from('private_ai_knowledge_sources').update({ status:'processing', updated_at:new Date().toISOString() }).eq('id',created.data.id)
+    if(marked.error)throw marked.error
+    await attachKnowledgeSource(conversationId,created.data.id)
+    return json({ ok:true, duplicate:false, source_id:created.data.id, chunk_count:parts.length, background:true, attached_to_chat:Boolean(conversationId) })
+  } catch (e) {
+    const cleanup=await db.from('private_ai_knowledge_sources').delete().eq('id',created.data.id)
+    if(cleanup.error){
+      await db.from('private_ai_knowledge_sources').update({
+        status:'failed',last_error:'Creation failed: '+String(e instanceof Error?e.message:e).slice(0,1600),updated_at:new Date().toISOString()
+      }).eq('id',created.data.id)
+    }
+    throw e
   }
-  await db.from('private_ai_knowledge_sources').update({ status:'processing', updated_at:new Date().toISOString() }).eq('id',created.data.id)
-  await attachKnowledgeSource(conversationId,created.data.id)
-  return json({ ok:true, duplicate:false, source_id:created.data.id, chunk_count:parts.length, background:true, attached_to_chat:Boolean(conversationId) })
 }
 
 async function knowledgeCreate(req: Request) {
@@ -1342,7 +1353,11 @@ async function knowledgeMediaCreate(req: Request) {
     type:'process_media_source',
     source_id:created.data.id,
   }})
-  if(job.error)throw job.error
+  if(job.error){
+    await db.from('private_ai_knowledge_sources').delete().eq('id',created.data.id)
+    await db.storage.from(ATTACHMENT_BUCKET).remove([path])
+    throw job.error
+  }
   return json({ok:true,duplicate:false,source_id:created.data.id,background:true,status:'processing'})
 }
 
@@ -1390,6 +1405,40 @@ async function healthRoute() {
   return json({ ok:true, status:q.data?.status || 'unknown', checked_at:q.data?.checked_at || null, details:q.data?.details || run.data || {} })
 }
 
+async function diagnosticsRoute() {
+  const now=Date.now()
+  const [cfg,sources,chunks,mappings,health,buckets]=await Promise.all([
+    db.from('private_ai_runtime_config').select('last_worker_run_at,last_worker_success_at,last_worker_error,backend_version').eq('id',true).maybeSingle(),
+    db.from('private_ai_knowledge_sources').select('id,status,chunk_count,embedded_chunk_count,global_enabled,failure_count'),
+    db.from('private_ai_knowledge_chunks').select('id',{count:'exact',head:true}),
+    db.from('private_ai_chat_knowledge').select('source_id,conversation_id'),
+    db.from('private_ai_health_status').select('checked_at,status,details').eq('id',true).maybeSingle(),
+    db.storage.listBuckets(),
+  ])
+  const errors=[cfg.error,sources.error,chunks.error,mappings.error,health.error,buckets.error].filter(Boolean)
+  if(errors.length)throw errors[0]
+  const sourceRows=sources.data||[],mapRows=mappings.data||[]
+  const mapped=new Set(mapRows.map((x:any)=>String(x.source_id)))
+  const failed=sourceRows.filter((x:any)=>x.status==='failed').length
+  const pending=sourceRows.filter((x:any)=>['queued','processing'].includes(String(x.status||''))).length
+  const incomplete=sourceRows.filter((x:any)=>Number(x.embedded_chunk_count||0)<Number(x.chunk_count||0)).length
+  const unscopedSpecialist=sourceRows.filter((x:any)=>x.global_enabled!==true&&!mapped.has(String(x.id))).length
+  const lastSuccess=cfg.data?.last_worker_success_at?new Date(cfg.data.last_worker_success_at).getTime():0
+  const workerAge=lastSuccess?Math.max(0,Math.round((now-lastSuccess)/1000)):null
+  const privateBucket=(buckets.data||[]).find((b:any)=>b.name===ATTACHMENT_BUCKET)
+  const healthDetails:any=health.data?.details||{}
+  const checks=[
+    {id:'database',name:'Database access',ok:true,detail:String(sourceRows.length)+' Knowledge sources · '+String(chunks.count||0)+' chunks'},
+    {id:'openrouter',name:'AI provider',ok:Boolean(OPENROUTER_KEY),detail:OPENROUTER_KEY?'OpenRouter configured':'OpenRouter key missing'},
+    {id:'worker',name:'Background worker',ok:Boolean(lastSuccess)&&workerAge!==null&&workerAge<900&&!cfg.data?.last_worker_error,detail:cfg.data?.last_worker_error?String(cfg.data.last_worker_error).slice(0,240):(workerAge===null?'No successful run recorded':'last success '+workerAge+'s ago')},
+    {id:'knowledge',name:'Knowledge indexing',ok:failed===0&&pending===0&&incomplete===0,detail:failed+' failed · '+pending+' processing · '+incomplete+' incomplete'},
+    {id:'scope',name:'Knowledge isolation',ok:unscopedSpecialist===0,detail:unscopedSpecialist?unscopedSpecialist+' specialist source(s) missing a chat assignment':'specialist sources are assigned'},
+    {id:'storage',name:'Private attachment storage',ok:Boolean(privateBucket)&&privateBucket.public!==true,detail:privateBucket?(privateBucket.public===true?'bucket is public':'private bucket active'):'attachment bucket missing'},
+    {id:'security',name:'Security maintenance',ok:health.data?.status==='healthy'&&Number(healthDetails.unexpected_client_grants||0)===0&&Number(healthDetails.public_attachment_buckets||0)===0,detail:String(health.data?.status||'unknown')+' · public grants '+Number(healthDetails.unexpected_client_grants||0)+' · public buckets '+Number(healthDetails.public_attachment_buckets||0)},
+  ]
+  return json({ok:checks.every(x=>x.ok),checked_at:new Date().toISOString(),backend_version:cfg.data?.backend_version||'unknown',checks})
+}
+
 async function statusRoute() {
   const spend = await rollingSpend()
   const cfg = await db.from('private_ai_runtime_config')
@@ -1431,6 +1480,7 @@ Deno.serve(async (req) => {
 
   try {
     if (path === '/api/health' && req.method === 'GET') return healthRoute()
+    if (path === '/api/diagnostics' && req.method === 'GET') return diagnosticsRoute()
     if (path === '/api/chat' && req.method === 'POST') return chat(req)
     if (path === '/api/research' && req.method === 'POST') return research(req)
     if (path === '/api/sessions' && req.method === 'GET') return listDeviceSessions()
