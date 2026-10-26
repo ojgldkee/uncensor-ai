@@ -1449,3 +1449,63 @@ drop index if exists public.private_ai_knowledge_file_sha256_uidx;
 create unique index if not exists private_ai_knowledge_sha256_uidx
   on public.private_ai_knowledge_sources(file_sha256)
   where file_sha256 is not null;
+
+
+-- One-time cross-device pairing. An already-enrolled device can issue a short-lived,
+-- single-use code so a new browser never needs the existing device token.
+create table if not exists public.private_ai_pairing_codes (
+  id uuid primary key default gen_random_uuid(),
+  code_hash text not null unique,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null default (now()+interval '10 minutes'),
+  used_at timestamptz,
+  created_by_session uuid references public.private_ai_device_sessions(id) on delete set null
+);
+alter table public.private_ai_pairing_codes enable row level security;
+revoke all on table public.private_ai_pairing_codes from anon,authenticated;
+grant select,insert,update,delete on table public.private_ai_pairing_codes to service_role;
+create index if not exists private_ai_pairing_codes_active_idx
+  on public.private_ai_pairing_codes(expires_at,used_at);
+
+create or replace function public.private_ai_issue_pairing_code(session_candidate text)
+returns table(pairing_id uuid,pairing_code text,expires_at timestamptz)
+language plpgsql security definer set search_path=''
+as $$
+declare session_hash text; sid uuid; code text; pid uuid:=extensions.gen_random_uuid(); exp timestamptz:=now()+interval '10 minutes';
+begin
+  if session_candidate is null or length(session_candidate)<32 then return; end if;
+  session_hash:=pg_catalog.encode(extensions.digest(session_candidate,'sha256'),'hex');
+  select id into sid from public.private_ai_device_sessions
+   where token_hash=session_hash and revoked_at is null and expires_at>now() limit 1;
+  if sid is null then return; end if;
+  code:=upper(substr(pg_catalog.encode(extensions.gen_random_bytes(8),'hex'),1,12));
+  insert into public.private_ai_pairing_codes(id,code_hash,expires_at,created_by_session)
+  values(pid,pg_catalog.encode(extensions.digest(code,'sha256'),'hex'),exp,sid);
+  return query select pid,code,exp;
+end;
+$$;
+
+create or replace function public.private_ai_redeem_pairing_code(pairing_candidate text,requested_device_name text default 'Private device')
+returns table(id uuid,session_token text,expires_at timestamptz)
+language plpgsql security definer set search_path=''
+as $$
+declare code_hash_value text; pair_id uuid; token text:=pg_catalog.encode(extensions.gen_random_bytes(32),'hex'); new_id uuid:=extensions.gen_random_uuid(); exp timestamptz:=now()+interval '30 days';
+begin
+  if pairing_candidate is null then return; end if;
+  code_hash_value:=pg_catalog.encode(extensions.digest(upper(regexp_replace(pairing_candidate,'[^A-Fa-f0-9]','','g')),'sha256'),'hex');
+  update public.private_ai_pairing_codes set used_at=now()
+   where id=(select id from public.private_ai_pairing_codes
+             where code_hash=code_hash_value and used_at is null and expires_at>now()
+             order by created_at desc limit 1 for update skip locked)
+  returning id into pair_id;
+  if pair_id is null then return; end if;
+  insert into public.private_ai_device_sessions(id,token_hash,device_name,expires_at)
+  values(new_id,pg_catalog.encode(extensions.digest(token,'sha256'),'hex'),
+         left(coalesce(nullif(trim(requested_device_name),''),'Private device'),120),exp);
+  return query select new_id,token,exp;
+end;
+$$;
+revoke all on function public.private_ai_issue_pairing_code(text) from public,anon,authenticated;
+revoke all on function public.private_ai_redeem_pairing_code(text,text) from public,anon,authenticated;
+grant execute on function public.private_ai_issue_pairing_code(text) to service_role;
+grant execute on function public.private_ai_redeem_pairing_code(text,text) to service_role;
