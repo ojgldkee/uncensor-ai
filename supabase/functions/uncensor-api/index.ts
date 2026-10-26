@@ -10,6 +10,7 @@ const EMBED_MODEL = Deno.env.get('OPENROUTER_EMBED_MODEL') || 'openai/text-embed
 const EMBED_DIMENSIONS = 384
 const ATTACHMENT_BUCKET = 'private-ai-attachments'
 const MULTIMODAL_MODEL = 'nvidia/nemotron-3.5-super-vl'
+const TRANSCRIBE_MODEL = Deno.env.get('OPENROUTER_TRANSCRIBE_MODEL') || 'openai/whisper-large-v3-turbo'
 
 const DEFAULT_MODEL = Deno.env.get('DEFAULT_MODEL') || 'deepseek/deepseek-v4.1-flash-1017'
 const ALLOWED_MODELS = (Deno.env.get('ALLOWED_MODELS') || 'deepseek/deepseek-v4.1-flash-1017,cognitivecomputations/dolphin-mistral-24b-venice-edition,nvidia/nemotron-3.5-super-vl,moonshotai/kimi-k3.1-pro,z-ai/glm-5.3-flash,qwen/qwen3.8-27b')
@@ -373,6 +374,7 @@ async function attachmentParts(attachments: any[]) {
       const txt = (await dl.data.text()).slice(0,250000)
       parts.push({ type: 'text', text: '\n\nATTACHED FILE: ' + String(a.name || 'text file') + '\n' + txt })
     } else if (kind === 'audio') {
+      if(Number(a.size||0)>16*1024*1024)throw new Error('Audio chat attachments are limited to 16 MB. Add larger recordings to Knowledge after compressing or splitting them.')
       const dl = await db.storage.from(ATTACHMENT_BUCKET).download(path)
       if (dl.error || !dl.data) throw dl.error || new Error('Could not read audio attachment')
       const buf = new Uint8Array(await dl.data.arrayBuffer())
@@ -383,7 +385,7 @@ async function attachmentParts(attachments: any[]) {
       const tr = await fetch('https://openrouter.ai/api/v1/audio/transcriptions', {
         method:'POST',
         headers:{ authorization:'Bearer '+OPENROUTER_KEY, 'content-type':'application/json', 'X-Title':'Uncensor AI' },
-        body:JSON.stringify({ model:'openai/whisper-1', input_audio:{ data:base64, format:ext } }),
+        body:JSON.stringify({ model:TRANSCRIBE_MODEL, input_audio:{ data:base64, format:ext } }),
         signal:AbortSignal.timeout(90000),
       })
       const td = await tr.json().catch(()=>({}))
@@ -784,11 +786,13 @@ async function chat(req: Request) {
   const attachments = Array.isArray(body?.attachments) ? body.attachments.slice(0,8) : []
   if (!text && !attachments.length) return json({ error: 'Message or attachment is required.' }, 400)
 
-  const conversation = await ensureConversation(body?.conversation_id ? String(body.conversation_id) : null, text)
+  const attachmentHint=attachments.map((a:any)=>String(a?.name||a?.kind||'').trim()).filter(Boolean).join(' ').slice(0,500)
+  const conversation = await ensureConversation(body?.conversation_id ? String(body.conversation_id) : null, text || attachmentHint || 'Attached document')
   const conversationId = String(conversation.id)
   await saveMessage(conversationId, 'user', text || 'Please analyze the attached item.', undefined, [], attachments)
 
-  const ctx = await relevantContext(text, body?.use_knowledge !== false, conversationId)
+  const retrievalQuery=text || attachmentHint || 'Analyze the attached document'
+  const ctx = await relevantContext(retrievalQuery, body?.use_knowledge !== false, conversationId)
   const recent = await recentMessages(conversationId, Number(conversation.summary_through_message_count || 0))
 
   const memoryText = (ctx.memories || []).slice(0, 12).map((m: any) =>
@@ -1308,6 +1312,10 @@ async function knowledgeMediaCreate(req: Request) {
   if(!Number.isFinite(size)||size<=0||size>104857600)return json({error:'Media must be between 1 byte and 100 MB.'},413)
   const sourceType=mime.startsWith('audio/')?'audio':mime.startsWith('video/')?'video':''
   if(!sourceType)return json({error:'Only video or audio files are supported here.'},415)
+  if(sourceType==='audio'&&size>16*1024*1024){
+    await db.storage.from(ATTACHMENT_BUCKET).remove([path])
+    return json({error:'Audio Knowledge is currently limited to 16 MB per file. Compress or split larger audio first.'},413)
+  }
 
   const found=await findDuplicateFile(sha,title,size)
   if(found){
