@@ -694,7 +694,7 @@ async function research(req: Request) {
       })
     }catch{}
   }
-  const ctx=await relevantContext(text,body?.use_knowledge!==false)
+  const ctx=await relevantContext(text,body?.use_knowledge!==false,conversationId)
   const recent=await recentMessages(conversationId,Number(conversation.summary_through_message_count||0))
 
   const memoryText=(ctx.memories||[]).slice(0,10).map((m:any)=>'- ['+String(m.category||'memory')+'] '+String(m.content||'')).join('\n')
