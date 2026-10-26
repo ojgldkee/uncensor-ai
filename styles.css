@@ -97,3 +97,14 @@
 .scope-explainer b{color:#e9f2ff;margin-right:5px}
 #moveKnowledgeDestination{width:100%}
 .conversation-item .conversation-open .title{max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* v24 reliability + scope clarity */
+.knowledge-scope-chip{flex:none;border-radius:999px;padding:3px 7px;font-size:8px;font-weight:800;letter-spacing:.06em}
+.knowledge-scope-chip.global{border:1px solid rgba(103,227,255,.30);background:rgba(103,227,255,.08);color:#8cecff}
+.knowledge-scope-chip.chat{border:1px solid rgba(138,140,255,.34);background:rgba(138,140,255,.09);color:#b9baff}
+#knowledgeList[aria-busy="true"]{opacity:.68;transition:opacity .12s ease}
+.message.user .user-message-content{justify-self:end;max-width:80%;min-width:0;display:flex;flex-direction:column;align-items:flex-end}
+.message.user .user-message-content .message-body{max-width:100%;justify-self:auto}
+.user-message-actions{justify-content:flex-end;align-self:flex-end;margin-top:5px}
+.user-message-actions button{opacity:.78}
+@media(max-width:780px){.message.user .user-message-content{max-width:90%}.knowledge-scope-chip{display:inline-flex}}
