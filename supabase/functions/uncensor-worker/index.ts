@@ -9,6 +9,9 @@ const db = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: fa
 const EMBED_MODEL = Deno.env.get('OPENROUTER_EMBED_MODEL') || 'openai/text-embedding-3-small'
 const EMBED_DIMENSIONS = 384
 const KNOWLEDGE_BATCH = Math.max(32, Math.min(256, Number(Deno.env.get('KNOWLEDGE_EMBED_BATCH') || '192')))
+const ATTACHMENT_BUCKET='private-ai-attachments'
+const MEDIA_VISION_MODEL=Deno.env.get('OPENROUTER_MEDIA_MODEL') || 'nvidia/nemotron-3.5-super-vl'
+const MEDIA_TRANSCRIBE_MODEL=Deno.env.get('OPENROUTER_TRANSCRIBE_MODEL') || 'openai/whisper-large-v3-turbo'
 
 type QueueJob = {
   msg_id: number
@@ -281,6 +284,211 @@ async function processMemoryBackfillBatch() {
   return Number(saved.data || rows.length)
 }
 
+
+function tsLabel(seconds:number){
+  const s=Math.max(0,Math.floor(Number(seconds||0))),m=Math.floor(s/60),r=s%60
+  return String(m).padStart(2,'0')+':'+String(r).padStart(2,'0')
+}
+
+function mediaJson(text:string){
+  const clean=String(text||'').trim().replace(/^\x60\x60\x60json\s*/i,'').replace(/\x60\x60\x60$/i,'').trim()
+  try{return JSON.parse(clean)}catch{}
+  const start=clean.indexOf('{'),end=clean.lastIndexOf('}')
+  if(start>=0&&end>start)return JSON.parse(clean.slice(start,end+1))
+  throw new Error('Media model returned invalid JSON')
+}
+
+async function mediaSignedUrl(path:string){
+  const q=await db.storage.from(ATTACHMENT_BUCKET).createSignedUrl(path,3600)
+  if(q.error||!q.data?.signedUrl)throw q.error||new Error('Could not create private media URL')
+  return q.data.signedUrl
+}
+
+async function transcribeSmallMedia(path:string,mime:string,fileName:string,size:number){
+  if(size>16*1024*1024)return null
+  const dl=await db.storage.from(ATTACHMENT_BUCKET).download(path)
+  if(dl.error||!dl.data)throw dl.error||new Error('Could not download media for transcription')
+  const bytes=new Uint8Array(await dl.data.arrayBuffer())
+  let binary=''
+  for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,Math.min(i+0x8000,bytes.length)))
+  const base64=btoa(binary)
+  const ext=(fileName.split('.').pop()||'mp4').toLowerCase()
+  const format=['wav','mp3','flac','m4a','ogg','webm','aac','mp4'].includes(ext)?ext:(mime.includes('mp4')?'mp4':'webm')
+  const res=await fetch('https://openrouter.ai/api/v1/audio/transcriptions',{
+    method:'POST',
+    headers:{authorization:'Bearer '+OPENROUTER_KEY,'content-type':'application/json','X-Title':'Uncensor AI Private Media'},
+    body:JSON.stringify({
+      model:MEDIA_TRANSCRIBE_MODEL,
+      input_audio:{data:base64,format},
+      response_format:'verbose_json',
+      timestamp_granularities:['segment'],
+      provider:{zdr:true,data_collection:'deny'},
+    }),
+    signal:AbortSignal.timeout(60000),
+  })
+  const raw=await res.json().catch(()=>({}))
+  if(!res.ok)throw new Error(raw?.error?.message||('Transcription '+res.status))
+  const segments=Array.isArray(raw?.segments)?raw.segments.map((s:any)=>({
+    start:Number(s.start||0),end:Number(s.end||0),text:String(s.text||'').trim()
+  })).filter((s:any)=>s.text):[]
+  return {text:String(raw?.text||'').trim(),segments,usage:raw?.usage||null}
+}
+
+async function analyzeVideo(path:string,title:string){
+  const url=await mediaSignedUrl(path)
+  const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
+    method:'POST',
+    headers:{authorization:'Bearer '+OPENROUTER_KEY,'content-type':'application/json','X-Title':'Uncensor AI Private Media'},
+    body:JSON.stringify({
+      model:MEDIA_VISION_MODEL,
+      stream:false,
+      temperature:0.1,
+      max_tokens:6000,
+      response_format:{type:'json_object'},
+      messages:[{role:'user',content:[
+        {type:'text',text:[
+          'Analyze this private reference video for a searchable Knowledge library.',
+          'Return JSON only with shape:',
+          '{"duration_seconds":number,"summary":"concise overview","segments":[{"start":number,"end":number,"topic":"short label","spoken":"important spoken content","visual":"important on-screen context, slides, dashboards, charts, UI or examples"}]}',
+          'Create useful chronological segments, usually 15-60 seconds each. Preserve concrete tactics, numbers, campaign settings, examples, caveats, and reasoning.',
+          'Use seconds from the start of the video. Do not invent details that are not visible/audible.',
+          'VIDEO TITLE: '+title
+        ].join('\n')},
+        {type:'video_url',video_url:{url}}
+      ]}],
+      provider:{allow_fallbacks:true,zdr:true,data_collection:'deny'},
+      usage:{include:true},
+    }),
+    signal:AbortSignal.timeout(90000),
+  })
+  const raw=await res.json().catch(()=>({}))
+  if(!res.ok)throw new Error(raw?.error?.message||('Video analysis '+res.status))
+  const content=String(raw?.choices?.[0]?.message?.content||'')
+  const parsed=mediaJson(content)
+  return {parsed,usage:raw?.usage||null,model:String(raw?.model||MEDIA_VISION_MODEL)}
+}
+
+async function processMediaSource(job:QueueJob){
+  const sourceId=String(job.message.source_id||'')
+  if(!sourceId){await archive(job.msg_id);return 'invalid media job'}
+  const source=await db.from('private_ai_knowledge_sources_read')
+    .select('id,title,source_type,metadata,failure_count').eq('id',sourceId).maybeSingle()
+  if(source.error)throw source.error
+  if(!source.data){await finish(job.msg_id);return 'source deleted'}
+
+  const meta:any=source.data.metadata||{}
+  const path=String(meta.storage_path||''),title=String(source.data.title||meta.file_name||'Media')
+  const mime=String(meta.mime||''),size=Number(meta.file_size||0),mode=String(meta.media_mode||'full')
+  if(!path.startsWith('uploads/'))throw new Error('Media source is missing its private storage path')
+
+  const updateMeta=async(stage:string,progress:number,extra:any={})=>{
+    const next={...meta,...extra,media_stage:stage,media_progress:progress,updated_at:new Date().toISOString()}
+    const q=await db.from('private_ai_knowledge_sources').update({metadata:next,status:'processing',last_error:null,updated_at:new Date().toISOString()}).eq('id',sourceId)
+    if(q.error)throw q.error
+    Object.assign(meta,next)
+  }
+
+  try{
+    await updateMeta('transcribing',20)
+    let transcript:any=null,visual:any=null,transcriptError='',visualError=''
+
+    try{transcript=await transcribeSmallMedia(path,mime,String(meta.file_name||title),size)}
+    catch(e){transcriptError=e instanceof Error?e.message:String(e)}
+
+    if(source.data.source_type==='video'&&mode!=='transcript'){
+      await updateMeta('analyzing_visuals',45,{transcription_available:Boolean(transcript)})
+      try{visual=await analyzeVideo(path,title)}catch(e){visualError=e instanceof Error?e.message:String(e)}
+    }
+
+    if(!transcript&&!visual)throw new Error('Media processing failed. '+[transcriptError,visualError].filter(Boolean).join(' · '))
+
+    const segments:any[]=[]
+    if(transcript?.segments?.length){
+      for(const s of transcript.segments){
+        segments.push({start:s.start,end:s.end,topic:'Transcript',spoken:s.text,visual:''})
+      }
+    }
+    if(visual?.parsed?.segments?.length){
+      for(const s of visual.parsed.segments){
+        const start=Number(s.start||0),end=Number(s.end||start)
+        segments.push({start,end,topic:String(s.topic||'Video'),spoken:String(s.spoken||''),visual:String(s.visual||'')})
+      }
+    }
+    if(!segments.length&&transcript?.text){
+      segments.push({start:0,end:Number(visual?.parsed?.duration_seconds||0),topic:'Transcript',spoken:transcript.text,visual:''})
+    }
+    segments.sort((a,b)=>a.start-b.start)
+
+    const payload:any[]=[]
+    const seen=new Set<string>()
+    for(const s of segments){
+      const body=[
+        '['+tsLabel(s.start)+'-'+tsLabel(s.end)+'] '+String(s.topic||'Reference'),
+        s.spoken?('Spoken: '+String(s.spoken).trim()):'',
+        s.visual?('Visual: '+String(s.visual).trim()):'',
+      ].filter(Boolean).join('\n').trim()
+      if(!body||seen.has(body))continue
+      seen.add(body)
+      payload.push({chunk_index:payload.length,content:body,content_hash:await contentHash(body)})
+    }
+    if(visual?.parsed?.summary){
+      const summary='[VIDEO OVERVIEW]\n'+String(visual.parsed.summary).trim()
+      payload.unshift({chunk_index:0,content:summary,content_hash:await contentHash(summary)})
+      payload.forEach((p,i)=>p.chunk_index=i)
+    }
+    if(!payload.length)throw new Error('Media processing produced no searchable reference sections')
+
+    await updateMeta('building_knowledge',70,{
+      duration_seconds:Number(visual?.parsed?.duration_seconds||transcript?.duration||0),
+      transcript_method:transcript?'timestamped_transcription':(source.data.source_type==='video'?'visual_video_analysis':'unavailable'),
+      visual_analysis:Boolean(visual),
+      transcript_error:transcriptError||null,
+      visual_error:visualError||null,
+      reference_sections:payload.length,
+    })
+
+    const joined=payload.map(p=>p.content).join('\n\n')
+    const replaced=await db.rpc('private_ai_replace_knowledge_chunks',{
+      p_source_id:sourceId,
+      p_content_hash:await contentHash(joined),
+      p_char_count:joined.length,
+      p_chunks:payload,
+      p_metadata:{...meta,media_stage:'indexing',media_progress:80,reference_sections:payload.length},
+    })
+    if(replaced.error)throw replaced.error
+
+    if(transcript?.usage){
+      try{await db.from('private_ai_usage').insert({
+        conversation_id:null,model:MEDIA_TRANSCRIBE_MODEL,operation:'media_transcription',
+        prompt_tokens:Number(transcript.usage.prompt_tokens||0),completion_tokens:Number(transcript.usage.completion_tokens||0),
+        total_tokens:Number(transcript.usage.total_tokens||0),cost_usd:Number(transcript.usage.cost||0)
+      })}catch{}
+    }
+    if(visual?.usage){
+      try{await db.from('private_ai_usage').insert({
+        conversation_id:null,model:visual.model,operation:'media_visual_analysis',
+        prompt_tokens:Number(visual.usage.prompt_tokens||0),completion_tokens:Number(visual.usage.completion_tokens||0),
+        total_tokens:Number(visual.usage.total_tokens||0),cost_usd:Number(visual.usage.cost||0)
+      })}catch{}
+    }
+    await finish(job.msg_id)
+    return 'media reference built: '+String(payload.length)+' timestamped sections'
+  }catch(e){
+    const message=e instanceof Error?e.message:String(e)
+    const failures=Number(source.data.failure_count||0)+1
+    const final=failures>=5
+    const q=await db.from('private_ai_knowledge_sources').update({
+      failure_count:failures,last_error:message.slice(0,1800),
+      status:final?'failed':'processing',
+      metadata:{...meta,media_stage:final?'failed':'retrying',media_progress:final?100:10},
+      updated_at:new Date().toISOString()
+    }).eq('id',sourceId)
+    if(q.error)console.error('failed to record media error',q.error)
+    if(final){await archive(job.msg_id);return 'media failed after retries: '+message}
+    throw e
+  }
+}
+
 async function processHtmlReprocess(job: QueueJob) {
   const sourceId=String(job.message.source_id||'')
   if(!sourceId){await archive(job.msg_id);return 'invalid HTML reprocess job'}
@@ -441,6 +649,7 @@ async function processJob(job: QueueJob) {
   const type = String(job.message?.type || '')
   if (type === 'embed_knowledge_chunk') { await finish(job.msg_id); return 'legacy embedding job removed' }
   if (type === 'reprocess_html_source') return processHtmlReprocess(job)
+  if (type === 'process_media_source') return processMediaSource(job)
   if (type === 'summarize_conversation') return processSummary(job)
   if (type === 'extract_memories') return processMemories(job)
   await archive(job.msg_id)
