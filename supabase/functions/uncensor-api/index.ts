@@ -187,7 +187,8 @@ async function signUpload(req: Request) {
   if (!allowed) return json({ error: 'That file type is not supported yet.' }, 415)
   if (!Number.isFinite(size) || size <= 0) return json({ error: 'File size is required.' }, 400)
   if (size > 104857600) return json({ error: 'Attachment exceeds the 100 MB limit.' }, 413)
-  const path = 'uploads/' + new Date().toISOString().slice(0,10) + '/' + crypto.randomUUID() + '/' + name
+  const ext=(name.includes('.')?'.'+name.split('.').pop()!.replace(/[^a-zA-Z0-9]/g,'').slice(0,10).toLowerCase():'')
+  const path = 'uploads/' + new Date().toISOString().slice(0,10) + '/' + crypto.randomUUID() + ext
   const signed = await db.storage.from(ATTACHMENT_BUCKET).createSignedUploadUrl(path)
   if (signed.error || !signed.data) throw signed.error || new Error('Could not create upload URL')
   return json({ ok: true, path, signed_url: signed.data.signedUrl, token: signed.data.token, mime, kind, size })
@@ -328,9 +329,13 @@ async function ensureConversation(id: string | null, firstMessage: string) {
     if (q.data) return q.data
   }
   const title = titleFrom(firstMessage)
-  const created = await db.from('private_ai_conversations').insert({ title }).select().single()
+  const created = await db.from('private_ai_conversations').insert({ title }).select('id').single()
   if (created.error) throw created.error
-  return created.data
+  const read = await db.from('private_ai_conversations_read')
+    .select('id,title,rolling_summary,summary_through_message_count,total_message_count')
+    .eq('id',created.data.id).single()
+  if (read.error) throw read.error
+  return read.data
 }
 
 async function recentMessages(conversationId: string, summaryThrough: number) {
@@ -818,7 +823,7 @@ async function chat(req: Request) {
 }
 
 async function listConversations() {
-  const q = await db.from('private_ai_conversations')
+  const q = await db.from('private_ai_conversations_read')
     .select('id,title,pinned,total_message_count,summary_updated_at,created_at,updated_at')
     .order('pinned', { ascending: false }).order('updated_at', { ascending: false }).limit(1000)
   if (q.error) throw q.error
@@ -840,9 +845,11 @@ async function updateConversation(id: string, req: Request) {
   const patch: any = { updated_at: new Date().toISOString() }
   if (typeof body.title === 'string') patch.title = body.title.trim().slice(0, 120) || 'New chat'
   if (typeof body.pinned === 'boolean') patch.pinned = body.pinned
-  const q = await db.from('private_ai_conversations').update(patch).eq('id', id).select().single()
+  const q = await db.from('private_ai_conversations').update(patch).eq('id', id).select('id').single()
   if (q.error) throw q.error
-  return json({ ok: true, conversation: q.data })
+  const read = await db.from('private_ai_conversations_read').select('*').eq('id',id).single()
+  if (read.error) throw read.error
+  return json({ ok: true, conversation: read.data })
 }
 
 async function memoriesRoute(req: Request) {
@@ -856,28 +863,43 @@ async function memoriesRoute(req: Request) {
 }
 
 async function knowledgeList() {
-  const q = await db.from('private_ai_knowledge_sources')
+  const q = await db.from('private_ai_knowledge_sources_read')
     .select('id,title,source_type,enabled,content_hash,file_sha256,char_count,chunk_count,embedded_chunk_count,status,failure_count,last_error,metadata,created_at,updated_at,completed_at')
     .order('created_at', { ascending: false }).limit(1000)
   if (q.error) throw q.error
   return json({ sources: q.data || [] })
 }
 
+async function readKnowledgeSource(id:string) {
+  const q=await db.from('private_ai_knowledge_sources_read')
+    .select('id,title,status,chunk_count,embedded_chunk_count,file_sha256,metadata,source_type,enabled,char_count,created_at,updated_at')
+    .eq('id',id).maybeSingle()
+  if(q.error)throw q.error
+  return q.data
+}
+
 async function findDuplicateFile(fileSha256: string, title: string, fileSize: number) {
   const sha=String(fileSha256||'').toLowerCase().trim()
   if(sha){
     const exact=await db.from('private_ai_knowledge_sources')
-      .select('id,title,status,chunk_count,embedded_chunk_count,file_sha256,metadata')
-      .eq('source_type','file').eq('file_sha256',sha).maybeSingle()
+      .select('id').eq('source_type','file').eq('file_sha256',sha).maybeSingle()
     if(exact.error)throw exact.error
-    if(exact.data)return { source:exact.data, reason:'exact_sha256' }
+    if(exact.data){
+      const source=await readKnowledgeSource(exact.data.id)
+      return source ? {source,reason:'exact_sha256'} : null
+    }
   }
+  const normalizedTitle=title.trim().slice(0,160)
+  const titleHash=await contentHash(normalizedTitle)
   const legacy=await db.from('private_ai_knowledge_sources')
-    .select('id,title,status,chunk_count,embedded_chunk_count,file_sha256,metadata')
-    .eq('source_type','file').eq('title',title.trim().slice(0,160)).limit(25)
+    .select('id').eq('source_type','file').is('file_sha256',null)
+    .eq('title_hash',titleHash).eq('file_size_bytes',Number(fileSize)).limit(1)
   if(legacy.error)throw legacy.error
-  const match=(legacy.data||[]).find((x:any)=>!x.file_sha256 && Number(x.metadata?.file_size||-1)===Number(fileSize))
-  return match ? { source:match, reason:'legacy_name_size' } : null
+  if(legacy.data?.[0]){
+    const source=await readKnowledgeSource(legacy.data[0].id)
+    return source ? {source,reason:'legacy_name_size'} : null
+  }
+  return null
 }
 
 async function knowledgeFileCheck(req: Request) {
@@ -892,9 +914,9 @@ async function knowledgeFileCheck(req: Request) {
     const claimed=await db.from('private_ai_knowledge_sources')
       .update({file_sha256:sha,updated_at:new Date().toISOString()})
       .eq('id',found.source.id).is('file_sha256',null)
-      .select('id,title,status,chunk_count,embedded_chunk_count,file_sha256,metadata').maybeSingle()
+      .select('id').maybeSingle()
     if(!claimed.error && claimed.data){
-      found.source=claimed.data
+      found.source=(await readKnowledgeSource(claimed.data.id))||found.source
       found.reason='legacy_upgraded_to_sha256'
     }
   }
@@ -913,9 +935,9 @@ async function createKnowledgeRecord(title: string, text: string, sourceType = '
   const fileFingerprint=sourceType==='file' && Boolean(metadata?.file_sha256)
   if(!fileFingerprint){
     const existing = await db.from('private_ai_knowledge_sources')
-      .select('id,title,status,chunk_count,embedded_chunk_count').eq('content_hash', hash).maybeSingle()
+      .select('id').eq('content_hash', hash).maybeSingle()
     if (existing.error) throw existing.error
-    if (existing.data) return json({ ok: true, duplicate: true, duplicate_reason:'content_hash', source: existing.data })
+    if (existing.data) return json({ ok: true, duplicate: true, duplicate_reason:'content_hash', source: await readKnowledgeSource(existing.data.id) })
   }
 
   const parts = chunkText(text)
@@ -930,13 +952,12 @@ async function createKnowledgeRecord(title: string, text: string, sourceType = '
     embedded_chunk_count: 0,
     status: 'queued',
     metadata,
-  }).select().single()
+  }).select('id').single()
   if (created.error) {
     if (fileSha256 && String((created.error as any)?.code || '') === '23505') {
       const exact = await db.from('private_ai_knowledge_sources')
-        .select('id,title,status,chunk_count,embedded_chunk_count,file_sha256,metadata')
-        .eq('source_type','file').eq('file_sha256',fileSha256).maybeSingle()
-      if (!exact.error && exact.data) return json({ ok:true, duplicate:true, duplicate_reason:'exact_sha256', source:exact.data })
+        .select('id').eq('source_type','file').eq('file_sha256',fileSha256).maybeSingle()
+      if (!exact.error && exact.data) return json({ ok:true, duplicate:true, duplicate_reason:'exact_sha256', source:await readKnowledgeSource(exact.data.id) })
     }
     throw created.error
   }
@@ -969,8 +990,8 @@ async function knowledgeCreate(req: Request) {
         const claimed=await db.from('private_ai_knowledge_sources')
           .update({file_sha256:fileSha,updated_at:new Date().toISOString()})
           .eq('id',found.source.id).is('file_sha256',null)
-          .select('id,title,status,chunk_count,embedded_chunk_count,file_sha256,metadata').maybeSingle()
-        if(!claimed.error && claimed.data){found.source=claimed.data;found.reason='legacy_upgraded_to_sha256'}
+          .select('id').maybeSingle()
+        if(!claimed.error && claimed.data){found.source=(await readKnowledgeSource(claimed.data.id))||found.source;found.reason='legacy_upgraded_to_sha256'}
       }
       return json({ok:true,duplicate:true,duplicate_reason:found.reason,source:found.source})
     }
@@ -1052,7 +1073,7 @@ Deno.serve(async (req) => {
       if (req.method === 'GET') return getConversation(id)
       if (req.method === 'PATCH') return updateConversation(id, req)
       if (req.method === 'DELETE') {
-        const messages = await db.from('private_ai_messages').select('attachments').eq('conversation_id', id)
+        const messages = await db.from('private_ai_messages_read').select('attachments').eq('conversation_id', id)
         const paths = (messages.data || []).flatMap((m: any) => Array.isArray(m.attachments) ? m.attachments : [])
           .map((a: any) => String(a?.path || '')).filter((p: string) => p.startsWith('uploads/'))
         if (paths.length) await db.storage.from(ATTACHMENT_BUCKET).remove([...new Set(paths)])
@@ -1070,9 +1091,10 @@ Deno.serve(async (req) => {
         const patch: any = { updated_at: new Date().toISOString() }
         if (typeof body.title === 'string') patch.title = body.title.trim().slice(0, 160) || 'Untitled'
         if (typeof body.enabled === 'boolean') patch.enabled = body.enabled
-        const q = await db.from('private_ai_knowledge_sources').update(patch).eq('id', id).select().single()
+        const q = await db.from('private_ai_knowledge_sources').update(patch).eq('id', id).select('id').single()
         if (q.error) throw q.error
-        return json({ ok: true, source: q.data })
+        const read=await readKnowledgeSource(id)
+        return json({ ok: true, source: read })
       }
       if (req.method === 'DELETE') {
         const q = await db.from('private_ai_knowledge_sources').delete().eq('id', id)
