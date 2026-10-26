@@ -12,8 +12,8 @@
     .hidden{display:none!important}
     #app{min-height:100dvh}
   </style>
-  <link rel="manifest" href="./manifest.webmanifest?v=12" />
-  <link rel="stylesheet" href="./styles.css?v=12" />
+  <link rel="manifest" href="./manifest.webmanifest?v=13" />
+  <link rel="stylesheet" href="./styles.css?v=13" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -62,6 +62,7 @@
           </select>
         </div>
         <div class="topbar-right">
+          <button id="webToggle" class="chip research-chip" title="Search the current web and compare sources">Web off</button>
           <button id="knowledgeToggle" class="chip active" title="Use your saved knowledge">Knowledge on</button>
           <button id="exportChat" class="icon-btn desktop-action" title="Export current chat">⇩</button>
           <button id="deleteChatTop" class="icon-btn desktop-action danger-hover" title="Permanently delete current chat">⌫</button>
@@ -235,7 +236,9 @@
           <option value="direct">Direct</option><option value="teacher">Teacher</option><option value="precise">Precise</option><option value="deep">Deep analysis</option>
         </select>
       </label>
-      <label class="setting-stack"><span><strong>Private access key</strong><small>Stored only on this device. It is never committed to GitHub.</small></span><input id="accessKeyInput" type="password" autocomplete="off" placeholder="Enter once on this device" /></label>
+      <label class="setting-stack"><span><strong>Private access key</strong><small>Used once to enroll this browser as a revocable private device. The master key is removed from local storage after enrollment.</small></span><input id="accessKeyInput" type="password" autocomplete="off" placeholder="Enter master key to enroll this device" /></label>
+      <div class="settings-info"><span>Device security</span><strong id="deviceSessionStatus">Checking…</strong></div>
+      <button id="revokeThisDevice" class="secondary-btn" type="button">Revoke this device session</button>
       <label class="setting-stack"><span><strong>Custom instructions</strong><small>Added to the server-side assistant prompt for your requests.</small></span><textarea id="stylePrompt" rows="7"></textarea></label>
       <div class="settings-info"><span>Status</span><strong id="settingsStatus">Checking…</strong></div>
       <div class="settings-info"><span>Storage</span><strong>Chats + knowledge persist in Supabase</strong></div>
@@ -256,7 +259,7 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="./config.js?v=12"></script>
-  <script src="./app.js?v=12" defer></script>
+  <script src="./config.js?v=13"></script>
+  <script src="./app.js?v=13" defer></script>
 </body>
 </html>
