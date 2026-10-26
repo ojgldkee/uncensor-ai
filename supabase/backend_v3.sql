@@ -1475,8 +1475,8 @@ declare session_hash text; sid uuid; code text; pid uuid:=extensions.gen_random_
 begin
   if session_candidate is null or length(session_candidate)<32 then return; end if;
   session_hash:=pg_catalog.encode(extensions.digest(session_candidate,'sha256'),'hex');
-  select id into sid from public.private_ai_device_sessions
-   where token_hash=session_hash and revoked_at is null and expires_at>now() limit 1;
+  select s.id into sid from public.private_ai_device_sessions s
+   where s.token_hash=session_hash and s.revoked_at is null and s.expires_at>now() limit 1;
   if sid is null then return; end if;
   code:=upper(substr(pg_catalog.encode(extensions.gen_random_bytes(8),'hex'),1,12));
   insert into public.private_ai_pairing_codes(id,code_hash,expires_at,created_by_session)
@@ -1493,11 +1493,11 @@ declare code_hash_value text; pair_id uuid; token text:=pg_catalog.encode(extens
 begin
   if pairing_candidate is null then return; end if;
   code_hash_value:=pg_catalog.encode(extensions.digest(upper(regexp_replace(pairing_candidate,'[^A-Fa-f0-9]','','g')),'sha256'),'hex');
-  update public.private_ai_pairing_codes set used_at=now()
-   where id=(select id from public.private_ai_pairing_codes
-             where code_hash=code_hash_value and used_at is null and expires_at>now()
-             order by created_at desc limit 1 for update skip locked)
-  returning id into pair_id;
+  update public.private_ai_pairing_codes p set used_at=now()
+   where p.id=(select p2.id from public.private_ai_pairing_codes p2
+             where p2.code_hash=code_hash_value and p2.used_at is null and p2.expires_at>now()
+             order by p2.created_at desc limit 1 for update skip locked)
+  returning p.id into pair_id;
   if pair_id is null then return; end if;
   insert into public.private_ai_device_sessions(id,token_hash,device_name,expires_at)
   values(new_id,pg_catalog.encode(extensions.digest(token,'sha256'),'hex'),
