@@ -15,8 +15,8 @@
     .hidden{display:none!important}
     #app{min-height:100dvh}
   </style>
-  <link rel="manifest" href="./manifest.webmanifest?v=18" />
-  <link rel="stylesheet" href="./styles.css?v=18" />
+  <link rel="manifest" href="./manifest.webmanifest?v=19" />
+  <link rel="stylesheet" href="./styles.css?v=19" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -259,6 +259,15 @@
       </label>
       <label class="setting-stack"><span><strong>Private access key</strong><small>Used once to enroll this browser as a revocable private device. The master key is removed from local storage after enrollment.</small></span><input id="accessKeyInput" type="password" autocomplete="off" placeholder="Enter master key to enroll this device" /></label>
       <div class="settings-info"><span>Device security</span><strong id="deviceSessionStatus">Checking…</strong></div>
+      <div class="device-link-card">
+        <div><strong>Link another device</strong><small>On an enrolled phone/computer, generate a one-time 10-minute code. Enter that code on the new device. No master key or device token needs to be copied.</small></div>
+        <button id="generatePairingCode" class="secondary-btn" type="button">Generate one-time link code</button>
+        <div id="pairingCodeBox" class="pairing-code-box hidden"><code id="pairingCodeValue"></code><small id="pairingCodeExpiry"></small></div>
+        <div class="pairing-entry">
+          <input id="pairingCodeInput" type="text" inputmode="text" autocomplete="one-time-code" maxlength="20" placeholder="Enter link code on this device" />
+          <button id="redeemPairingCode" class="secondary-btn" type="button">Link this device</button>
+        </div>
+      </div>
       <button id="revokeThisDevice" class="secondary-btn" type="button">Revoke this device session</button>
       <div class="security-recovery">
         <div><strong>Offline recovery key</strong><small>Generate from this enrolled device. Save it in a password manager. The app will show it only once and will not store it on this device.</small></div>
@@ -290,7 +299,7 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="./config.js?v=18"></script>
-  <script src="./app.js?v=18" defer></script>
+  <script src="./config.js?v=19"></script>
+  <script src="./app.js?v=19" defer></script>
 </body>
 </html>
