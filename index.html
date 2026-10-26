@@ -15,8 +15,8 @@
     .hidden{display:none!important}
     #app{min-height:100dvh}
   </style>
-  <link rel="manifest" href="./manifest.webmanifest?v=21" />
-  <link rel="stylesheet" href="./styles.css?v=21" />
+  <link rel="manifest" href="./manifest.webmanifest?v=22" />
+  <link rel="stylesheet" href="./styles.css?v=22" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -138,15 +138,16 @@
     <div class="modal-card knowledge-hub-card">
       <div class="modal-head knowledge-hub-head">
         <div>
-          <h2 id="knowledgeTitle">Knowledge</h2>
-          <p>Your permanent private library. Everything here can be retrieved from any chat when Knowledge is on.</p>
+          <h2 id="knowledgeTitle">Chat Knowledge</h2>
+          <p id="knowledgeScopeDescription">Sources here belong to this chat only. The AI will not pull unrelated Knowledge from other chats.</p>
         </div>
         <button class="icon-btn" data-close="knowledgeModal">×</button>
       </div>
 
       <div class="knowledge-hub-toolbar">
         <div class="knowledge-tabs">
-          <button id="knowledgeLibraryTab" class="knowledge-tab active">Library</button>
+          <button id="knowledgeLibraryTab" class="knowledge-tab active">This chat</button>
+          <button id="knowledgeUnassignedTab" class="knowledge-tab">Unassigned</button>
           <button id="knowledgeAddTab" class="knowledge-tab">＋ Add source</button>
         </div>
         <div class="knowledge-stats">
@@ -160,7 +161,7 @@
 
       <section id="knowledgeLibraryPanel" class="knowledge-library-panel">
         <div class="knowledge-library-controls">
-          <div class="knowledge-search knowledge-search-large"><input id="knowledgeSearch" type="search" placeholder="Search your entire knowledge library…" /></div>
+          <div class="knowledge-search knowledge-search-large"><input id="knowledgeSearch" type="search" placeholder="Search this chat's Knowledge…" /></div>
           <select id="knowledgeTypeFilter" class="knowledge-filter">
             <option value="all">All types</option>
             <option value="website">Websites</option>
@@ -183,8 +184,8 @@
 
       <section id="knowledgeAddPanel" class="knowledge-add-panel hidden">
         <div class="knowledge-add-intro">
-          <h3>Add anything you want the AI to know later</h3>
-          <p>Sources are global—not tied to this chat. They are deduplicated, indexed in the background, and retrieved only when relevant.</p>
+          <h3>Add Knowledge to this chat</h3>
+          <p id="knowledgeAddScopeText">New sources are private to the current chat. They can be attached to another chat later without duplicating the file.</p>
         </div>
 
         <label class="knowledge-collection-label">Collection
@@ -277,6 +278,11 @@
           <button id="copyRecoveryKey" class="text-btn" type="button">Copy</button>
         </div>
       </div>
+      <div class="data-safety-card">
+        <div><strong>Data safety & backup</strong><small>Your private login key only controls access. Your chats and Knowledge live separately in Supabase. Download a full plaintext JSON backup whenever you want an independent copy.</small></div>
+        <button id="exportFullBackup" class="secondary-btn" type="button">Download full backup</button>
+        <small id="backupStatus">Includes chats, messages, memories, Knowledge sources, Knowledge text, and chat-source assignments. Store the file securely.</small>
+      </div>
       <label class="setting-stack"><span><strong>Custom instructions</strong><small>Added to the server-side assistant prompt for your requests.</small></span><textarea id="stylePrompt" rows="7"></textarea></label>
       <div class="settings-info"><span>Status</span><strong id="settingsStatus">Checking…</strong></div>
       <div class="settings-info"><span>Security health</span><strong id="securityHealth">Checking…</strong></div>
@@ -299,7 +305,7 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="./config.js?v=21"></script>
-  <script src="./app.js?v=21" defer></script>
+  <script src="./config.js?v=22"></script>
+  <script src="./app.js?v=22" defer></script>
 </body>
 </html>
