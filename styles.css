@@ -35,3 +35,13 @@
 .knowledge-upload-bar{height:5px;border-radius:999px;background:#182130;margin-top:8px;overflow:hidden}
 .knowledge-upload-bar>span{display:block;height:100%;width:0;background:linear-gradient(90deg,#67dcff,#8bb8ff);transition:width .25s ease}
 .knowledge-upload-summary{display:flex;justify-content:space-between;gap:8px;padding:2px 2px 4px;color:#8b98ab;font-size:9px}
+
+.research-chip.active{border-color:rgba(132,255,189,.34);background:rgba(72,214,137,.10);color:#bfffd9}
+.research-chip.active:before{content:"●";font-size:7px;margin-right:5px;color:#62dfa0}
+.source-chip.web-source{text-decoration:none;cursor:pointer;display:inline-flex;align-items:center;gap:4px}
+.source-chip.web-source:after{content:"↗";font-size:8px;opacity:.65}
+.source-chip.web-source:hover{border-color:#466487;color:#d8ecff;background:#132033}
+.message-actions .save-web{border:1px solid #29384e;background:#101924;color:#93b9e8;padding:5px 8px}
+.message-actions .save-web:hover{background:#162338;color:#cfe4ff}
+#revokeThisDevice:disabled{opacity:.4;cursor:not-allowed}
+@media(max-width:780px){.topbar-right{gap:4px}.topbar-right .chip{padding:6px 6px;font-size:8px}.research-chip.active:before{display:none}}
