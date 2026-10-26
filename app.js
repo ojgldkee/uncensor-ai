@@ -254,7 +254,7 @@ function renderAttachmentTray(){
 }
 async function uploadAttachment(file){
   const kind=fileKind(file);
-  const max=kind==='video'||kind==='audio'?100*1024*1024:50*1024*1024;
+  const max=kind==='audio'?16*1024*1024:kind==='video'?100*1024*1024:50*1024*1024;
   if(file.size>max)throw new Error(file.name+' is too large. Current limit is '+Math.round(max/1048576)+' MB.');
   const signed=await api('/api/uploads/sign',{method:'POST',body:JSON.stringify({name:file.name,mime:file.type||'application/octet-stream',size:file.size,kind})});
   const fd=new FormData();fd.append('cacheControl','3600');fd.append('',file);
@@ -715,6 +715,11 @@ function signedUploadFile(file,url,onProgress){
 }
 function setFilePickerLabel(inputId,labelId){
   const input=$(inputId),label=$(labelId);if(!input||!label)return;
+  if(inputId==='knowledgeMediaFile'){
+    const file=input.files?.[0];
+    label.textContent=file?file.name:'or drag & drop it here · video up to 100 MB · audio up to 16 MB';
+    return;
+  }
   if(inputId==='knowledgeFile'){
     const staged=(state.knowledgeFileUploads||[]).filter(r=>r.status==='selected').length;
     label.textContent=staged
@@ -755,8 +760,10 @@ async function ingestKnowledgeMedia(){
   if(!state.activeId){toast('Send one message first so this chat exists, then add media Knowledge.',4500);return;}
   const file=$('knowledgeMediaFile').files?.[0];
   if(!file){toast('Choose a video or audio file first.');return;}
-  if(file.size>100*1024*1024){toast('This upload is over the current 100 MB limit.',4500);return;}
+  if(file.size>100*1024*1024){toast('This upload is over the current 100 MB video limit.',4500);return;}
+  if(file.type.startsWith('audio/')&&file.size>16*1024*1024){toast('Audio Knowledge is currently limited to 16 MB per file. Compress or split larger audio first.',5000);return;}
   const btn=$('saveKnowledgeMedia');btn.disabled=true;
+  let uploadedPath='';
   const [row]=stageKnowledgeFiles([file]);$('ingestProgress').classList.remove('hidden');
   try{
     setKnowledgeFileStatus(row,'fingerprinting',3,'Computing exact SHA-256','checking');
@@ -767,6 +774,7 @@ async function ingestKnowledgeMedia(){
 
     setKnowledgeFileStatus(row,'uploading',10,'Uploading into private Storage','uploading 0%');
     const signed=await api('/api/uploads/sign',{method:'POST',body:JSON.stringify({name:file.name,mime:file.type||'application/octet-stream',size:file.size,kind:file.type.startsWith('audio/')?'audio':'video'})});
+    uploadedPath=signed.path||'';
     await signedUploadFile(file,signed.signed_url,p=>{
       const pct=10+Math.round(p*35);setKnowledgeFileStatus(row,'uploading',pct,'Uploading into private Storage','uploading '+Math.round(p*100)+'%');
     });
@@ -785,6 +793,7 @@ async function ingestKnowledgeMedia(){
     $('knowledgeMediaFile').value='';setFilePickerLabel('knowledgeMediaFile','knowledgeMediaFileLabel');previewKnowledgeMedia(null);
     await loadKnowledge();switchKnowledgeTab('library');toast('Media uploaded. Building timestamped Knowledge in the background.',4500);
   }catch(e){
+    if(uploadedPath)await api('/api/uploads/discard',{method:'POST',body:JSON.stringify({path:uploadedPath})}).catch(()=>{});
     setKnowledgeFileStatus(row,'failed',100,e.message||'Media upload failed','failed');toast(e.message||'Media upload failed',4500);
   }finally{btn.disabled=false;scheduleKnowledgePoll();}
 }
