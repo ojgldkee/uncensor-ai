@@ -15,8 +15,8 @@
     .hidden{display:none!important}
     #app{min-height:100dvh}
   </style>
-  <link rel="manifest" href="./manifest.webmanifest?v=24" />
-  <link rel="stylesheet" href="./styles.css?v=24" />
+  <link rel="manifest" href="./manifest.webmanifest?v=25" />
+  <link rel="stylesheet" href="./styles.css?v=25" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -179,6 +179,12 @@
           </select>
           <button id="refreshKnowledge" class="secondary-btn">Refresh</button>
         </div>
+        <div id="knowledgeBulkBar" class="knowledge-bulk-bar">
+          <label class="knowledge-select-all"><input id="knowledgeSelectAll" type="checkbox" /><span>Select all shown</span></label>
+          <span id="knowledgeBulkCount">0 selected</span>
+          <button id="bulkMoveKnowledge" class="secondary-btn" type="button" disabled>Move selected</button>
+          <button id="clearKnowledgeSelection" class="text-btn" type="button" disabled>Clear</button>
+        </div>
         <div id="knowledgeList" class="knowledge-list knowledge-library-list"></div>
       </section>
 
@@ -234,14 +240,15 @@
           <div class="knowledge-add-card">
             <div class="knowledge-add-card-icon">▤</div>
             <h3>Text files</h3>
-            <p>Upload multiple text, Markdown, CSV, JSON, HTML, or code files.</p>
+            <p>Add as many text, Markdown, CSV, JSON, HTML, or code files as you want before uploading.</p>
             <input id="knowledgeFile" class="native-file-input" type="file" multiple accept=".txt,.md,.csv,.json,.html,.htm,.log,.js,.ts,.tsx,.jsx,.py,.sql,.css,text/*,application/json" />
             <label id="knowledgeFileDropzone" for="knowledgeFile" class="upload-dropzone">
               <span class="upload-dropzone-icon">↑</span>
-              <span><strong>Choose text files</strong><small id="knowledgeTextFileLabel">or drag & drop multiple files here · up to 100 MB each</small></span>
+              <span><strong>Choose multiple files</strong><small id="knowledgeTextFileLabel">Select several at once, then choose more anytime · drag & drop works too</small></span>
             </label>
+            <div class="multi-file-help"><span>✓ Multi-select enabled</span><span>✓ New picks are added, not replaced</span><span>✓ Remove individual files before upload</span></div>
             <small>Exact duplicate files are blocked before indexing using a SHA-256 fingerprint. Large text/HTML/code files are automatically cleaned, segmented, and indexed as one logical source. Up to 100 MB per file.</small>
-            <button id="saveKnowledgeFiles" class="secondary-btn">Add selected files</button>
+            <button id="saveKnowledgeFiles" class="primary-btn">Upload all staged files</button>
           </div>
         </div>
 
@@ -349,7 +356,7 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="./config.js?v=24"></script>
-  <script src="./app.js?v=24" defer></script>
+  <script src="./config.js?v=25"></script>
+  <script src="./app.js?v=25" defer></script>
 </body>
 </html>
