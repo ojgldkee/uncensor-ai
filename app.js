@@ -211,6 +211,7 @@ function fileKind(file){
   return'file';
 }
 function isSupportedKnowledgeTextFile(file){
+  if(String(file?.type||'').toLowerCase()==='application/pdf'||/\.pdf$/i.test(String(file?.name||'')))return true;
   return /\.(txt|md|csv|json|html?|log|js|ts|tsx|jsx|py|sql|css)$/i.test(String(file?.name||'')) ||
     /^text\//i.test(String(file?.type||'')) || String(file?.type||'').toLowerCase()==='application/json';
 }
@@ -764,11 +765,38 @@ async function ingestKnowledgeMedia(){
   }finally{btn.disabled=false;scheduleKnowledgePoll();}
 }
 
+let pdfjsKnowledgePromise=null;
+async function extractKnowledgePdf(file,onProgress){
+  if(!pdfjsKnowledgePromise)pdfjsKnowledgePromise=import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');
+  const pdfjs=await pdfjsKnowledgePromise;
+  pdfjs.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
+  const document=await pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;
+  const pages=[];
+  try{
+    for(let n=1;n<=document.numPages;n++){
+      const page=await document.getPage(n);
+      const content=await page.getTextContent();
+      let text='',lastY=null;
+      for(const item of content.items){
+        if(typeof item.str!=='string')continue;
+        const y=item.transform?.[5];
+        if(lastY!==null&&y!==undefined&&Math.abs(y-lastY)>3)text+='\n';
+        text+=item.str+(item.hasEOL?'\n':' ');
+        if(y!==undefined)lastY=y;
+      }
+      pages.push('[PDF page '+n+']\n'+text.trim());
+      if(onProgress)onProgress(n,document.numPages);
+    }
+  }finally{await document.destroy();}
+  const result=pages.join('\n\n');
+  if(result.replace(/\[PDF page \d+\]/g,'').trim().length<20)throw new Error('This PDF has no extractable text. Scanned/image-only PDFs need OCR support.');
+  return result;
+}
 async function ingestFileKnowledge(){
   if(!state.activeId){toast('Send one message first so this chat exists, then add file Knowledge.',4500);return;}
   const rowsToProcess=(state.knowledgeFileUploads||[]).filter(r=>r.status==='selected'&&r.file);
   const files=rowsToProcess.map(r=>r.file);
-  if(!files.length){toast('Stage one or more supported text files first.');return;}
+  if(!files.length){toast('Stage one or more PDF or text files first.');return;}
   const unsupported=files.find(f=>!isSupportedKnowledgeTextFile(f));
   if(unsupported){toast('Cannot index '+unsupported.name+'. Extract ZIP/archive files first and upload the TXT/HTML/JSON files inside.',5000);return;}
   const maxFileBytes=100*1024*1024;
@@ -794,9 +822,12 @@ async function ingestFileKnowledge(){
           continue;
         }
 
-        const html=/\.html?$/i.test(file.name);
+        const html=/\.html?$/i.test(file.name); const pdf=/\.pdf$/i.test(file.name)||file.type==='application/pdf';
         let cleanedText=null;
-        if(html&&file.size<=25*1024*1024){
+        if(pdf){
+          setKnowledgeFileStatus(row,'reading',20,'Extracting PDF pages','reading PDF');
+          cleanedText=await extractKnowledgePdf(file,(page,total)=>setKnowledgeFileStatus(row,'reading',20+Math.round(page/total*5),'Reading page '+page+' / '+total,'reading PDF'));
+        }else if(html&&file.size<=25*1024*1024){
           setKnowledgeFileStatus(row,'cleaning',20,'Removing saved-page code, images, CSS, and scripts','cleaning HTML');
           cleanedText=cleanHtmlClient(await file.text());
         }else{
@@ -816,7 +847,7 @@ async function ingestFileKnowledge(){
             title:file.name,text,type:'file',
             metadata:{
               file_group:group,file_name:file.name,file_size:file.size,file_sha256:fileSha256,
-              part:part+1,parts,cleaned_html:html&&cleanedText!==null
+              part:part+1,parts,cleaned_html:html&&cleanedText!==null,pdf_extracted:pdf
             }
           });
           if(r.duplicate){
