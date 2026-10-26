@@ -81,3 +81,19 @@
 .data-safety-card small{font-size:8px;color:#7f8ea4;line-height:1.45}
 .knowledge-tab{white-space:nowrap}
 .attach-chat{font-weight:800}
+
+.native-file-input{position:absolute!important;width:1px!important;height:1px!important;opacity:0!important;pointer-events:none!important}
+.upload-dropzone{display:flex;align-items:center;gap:12px;border:1px dashed #34435a;background:#0a111b;border-radius:12px;padding:14px 15px;cursor:pointer;transition:.16s ease;min-height:62px}
+.upload-dropzone:hover,.upload-dropzone.dragging{border-color:#6f8cff;background:#0d1726;transform:translateY(-1px)}
+.upload-dropzone-icon{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:#111d2d;color:#8fdfff;font-size:18px;font-weight:800}
+.upload-dropzone>span:last-child{display:flex;flex-direction:column;gap:3px;min-width:0}
+.upload-dropzone strong{font-size:11px;color:#edf4ff}
+.upload-dropzone small{font-size:8px;color:#7c8ca3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:420px}
+.knowledge-actions .move-source{width:auto;min-width:48px;padding:0 9px;font-size:9px;font-weight:750;border-radius:8px}
+.compact-modal-card{width:min(520px,calc(100vw - 28px));max-height:min(620px,calc(100vh - 28px));padding:18px}
+.modal-footer-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+.scope-explainer{display:grid;gap:7px;border:1px solid #283244;background:#0b1018;border-radius:11px;padding:10px;margin-top:10px}
+.scope-explainer span{font-size:9px;color:#8b9bb0;line-height:1.4}
+.scope-explainer b{color:#e9f2ff;margin-right:5px}
+#moveKnowledgeDestination{width:100%}
+.conversation-item .conversation-open .title{max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
