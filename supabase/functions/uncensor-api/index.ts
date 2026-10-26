@@ -986,9 +986,19 @@ async function attachKnowledgeSource(conversationId:string,sourceId:string){
   const conv=await db.from('private_ai_conversations').select('id').eq('id',conversationId).maybeSingle()
   if(conv.error)throw conv.error
   if(!conv.data)throw new Error('Chat not found')
-  const q=await db.from('private_ai_chat_knowledge').upsert({
-    conversation_id:conversationId,source_id:sourceId
-  },{onConflict:'conversation_id,source_id'})
+
+  let ids=[sourceId]
+  const source=await readKnowledgeSource(sourceId)
+  const group=String(source?.metadata?.file_group||'')
+  if(group){
+    const all=await db.from('private_ai_knowledge_sources_read').select('id,metadata').limit(2000)
+    if(all.error)throw all.error
+    ids=(all.data||[]).filter((x:any)=>String(x?.metadata?.file_group||'')===group).map((x:any)=>String(x.id))
+    if(!ids.length)ids=[sourceId]
+  }
+
+  const rows=ids.map(id=>({conversation_id:conversationId,source_id:id}))
+  const q=await db.from('private_ai_chat_knowledge').upsert(rows,{onConflict:'conversation_id,source_id'})
   if(q.error)throw q.error
   return true
 }
