@@ -714,3 +714,260 @@ revoke all on function public.private_ai_create_device_session(text,text) from p
 revoke all on function public.private_ai_validate_device_session(text) from public,anon,authenticated;
 grant execute on function public.private_ai_create_device_session(text,text) to service_role;
 grant execute on function public.private_ai_validate_device_session(text) to service_role;
+
+
+-- v5 privacy hardening
+-- Core private text is encrypted in Postgres using a random data key stored in
+-- Supabase Vault. Vault's root key is kept separately from database data.
+do $$
+begin
+  if not exists(select 1 from vault.decrypted_secrets where name='private_ai_data_key') then
+    perform vault.create_secret(
+      pg_catalog.encode(extensions.gen_random_bytes(48),'hex'),
+      'private_ai_data_key',
+      'Uncensor AI content encryption key'
+    );
+  end if;
+end $$;
+
+create or replace function public.private_ai_data_key()
+returns text language sql stable security definer set search_path=''
+as $$
+  select decrypted_secret from vault.decrypted_secrets
+  where name='private_ai_data_key' limit 1
+$$;
+
+create or replace function public.private_ai_encrypt_text(value text)
+returns text language plpgsql security definer set search_path=''
+as $$
+declare k text;
+begin
+  if value is null then return null; end if;
+  if value like 'enc:v1:%' then return value; end if;
+  k:=public.private_ai_data_key();
+  if k is null then raise exception 'private_ai_data_key missing'; end if;
+  return 'enc:v1:' || pg_catalog.encode(
+    extensions.pgp_sym_encrypt(value,k,'cipher-algo=aes256,compress-algo=1'),'base64'
+  );
+end;
+$$;
+
+create or replace function public.private_ai_decrypt_text(value text)
+returns text language plpgsql stable security definer set search_path=''
+as $$
+declare k text;
+begin
+  if value is null then return null; end if;
+  if value not like 'enc:v1:%' then return value; end if;
+  k:=public.private_ai_data_key();
+  if k is null then raise exception 'private_ai_data_key missing'; end if;
+  return extensions.pgp_sym_decrypt(pg_catalog.decode(substr(value,8),'base64'),k);
+exception when others then
+  return '[encrypted content unavailable]';
+end;
+$$;
+
+revoke all on function public.private_ai_data_key() from public,anon,authenticated;
+revoke all on function public.private_ai_encrypt_text(text) from public,anon,authenticated;
+revoke all on function public.private_ai_decrypt_text(text) from public,anon,authenticated;
+grant execute on function public.private_ai_encrypt_text(text) to service_role;
+grant execute on function public.private_ai_decrypt_text(text) to service_role;
+
+create or replace function public.private_ai_encrypt_message_content()
+returns trigger language plpgsql security definer set search_path=''
+as $$ begin new.content:=public.private_ai_encrypt_text(new.content); return new; end $$;
+create or replace function public.private_ai_encrypt_memory_content()
+returns trigger language plpgsql security definer set search_path=''
+as $$ begin new.content:=public.private_ai_encrypt_text(new.content); return new; end $$;
+create or replace function public.private_ai_encrypt_conversation_summary()
+returns trigger language plpgsql security definer set search_path=''
+as $$ begin if new.rolling_summary is not null then new.rolling_summary:=public.private_ai_encrypt_text(new.rolling_summary); end if; return new; end $$;
+create or replace function public.private_ai_encrypt_chunk_content()
+returns trigger language plpgsql security definer set search_path=''
+as $$ begin new.content:=public.private_ai_encrypt_text(new.content); return new; end $$;
+
+drop trigger if exists private_ai_encrypt_message_content_trigger on public.private_ai_messages;
+create trigger private_ai_encrypt_message_content_trigger
+before insert or update of content on public.private_ai_messages
+for each row execute function public.private_ai_encrypt_message_content();
+
+drop trigger if exists private_ai_encrypt_memory_content_trigger on public.private_ai_memories;
+create trigger private_ai_encrypt_memory_content_trigger
+before insert or update of content on public.private_ai_memories
+for each row execute function public.private_ai_encrypt_memory_content();
+
+drop trigger if exists private_ai_encrypt_conversation_summary_trigger on public.private_ai_conversations;
+create trigger private_ai_encrypt_conversation_summary_trigger
+before insert or update of rolling_summary on public.private_ai_conversations
+for each row execute function public.private_ai_encrypt_conversation_summary();
+
+drop trigger if exists private_ai_encrypt_chunk_content_trigger on public.private_ai_knowledge_chunks;
+create trigger private_ai_encrypt_chunk_content_trigger
+before insert or update of content on public.private_ai_knowledge_chunks
+for each row execute function public.private_ai_encrypt_chunk_content();
+
+update public.private_ai_messages set content=public.private_ai_encrypt_text(content)
+where content is not null and content not like 'enc:v1:%';
+update public.private_ai_memories set content=public.private_ai_encrypt_text(content)
+where content is not null and content not like 'enc:v1:%';
+update public.private_ai_conversations set rolling_summary=public.private_ai_encrypt_text(rolling_summary)
+where rolling_summary is not null and rolling_summary not like 'enc:v1:%';
+update public.private_ai_knowledge_chunks set content=public.private_ai_encrypt_text(content)
+where content is not null and content not like 'enc:v1:%';
+
+create or replace view public.private_ai_messages_read with (security_invoker=false) as
+select id,conversation_id,role,public.private_ai_decrypt_text(content) as content,
+       model,sources,attachments,created_at
+from public.private_ai_messages;
+
+create or replace view public.private_ai_conversations_read with (security_invoker=false) as
+select id,title,pinned,public.private_ai_decrypt_text(rolling_summary) as rolling_summary,
+       summary_through_message_count,summary_version,summary_updated_at,
+       total_message_count,created_at,updated_at
+from public.private_ai_conversations;
+
+create or replace view public.private_ai_memories_read with (security_invoker=false) as
+select id,memory_key,public.private_ai_decrypt_text(content) as content,
+       category,importance,confidence,active,pinned,source_conversation_id,
+       source_message_id,embedding,created_at,updated_at
+from public.private_ai_memories;
+
+create or replace view public.private_ai_knowledge_chunks_read with (security_invoker=false) as
+select id,source_id,chunk_index,public.private_ai_decrypt_text(content) as content,
+       content_hash,embedding,embedding_claimed_at,created_at
+from public.private_ai_knowledge_chunks;
+
+revoke all on public.private_ai_messages_read from public,anon,authenticated;
+revoke all on public.private_ai_conversations_read from public,anon,authenticated;
+revoke all on public.private_ai_memories_read from public,anon,authenticated;
+revoke all on public.private_ai_knowledge_chunks_read from public,anon,authenticated;
+grant select on public.private_ai_messages_read to service_role;
+grant select on public.private_ai_conversations_read to service_role;
+grant select on public.private_ai_memories_read to service_role;
+grant select on public.private_ai_knowledge_chunks_read to service_role;
+
+create or replace function public.private_ai_claim_knowledge_chunks(
+  batch_size integer default 192, lease_seconds integer default 180
+)
+returns table(id bigint, source_id uuid, content text)
+language plpgsql security definer set search_path=''
+as $$
+begin
+  return query
+  with picked as (
+    select c.id
+    from public.private_ai_knowledge_chunks c
+    join public.private_ai_knowledge_sources s on s.id=c.source_id
+    where c.embedding is null and s.enabled=true and s.status in ('queued','processing')
+      and (c.embedding_claimed_at is null
+        or c.embedding_claimed_at < now() - ((greatest(lease_seconds,30)::text || ' seconds')::interval))
+    order by c.id
+    for update of c skip locked
+    limit greatest(1,least(batch_size,512))
+  ),
+  claimed as (
+    update public.private_ai_knowledge_chunks c
+       set embedding_claimed_at=now()
+      from picked p where c.id=p.id
+    returning c.id,c.source_id,c.content
+  )
+  select claimed.id,claimed.source_id,public.private_ai_decrypt_text(claimed.content)
+  from claimed;
+end;
+$$;
+
+create or replace function public.private_ai_match_chunks(
+  query_embedding extensions.vector, match_count integer default 10,
+  similarity_threshold double precision default 0.25
+)
+returns table(id bigint,source_id uuid,title text,content text,chunk_index integer,similarity double precision)
+language sql stable security definer set search_path=''
+as $$
+  select c.id,c.source_id,s.title,public.private_ai_decrypt_text(c.content),c.chunk_index,
+         1-(c.embedding OPERATOR(extensions.<=>) query_embedding)
+  from public.private_ai_knowledge_chunks c
+  join public.private_ai_knowledge_sources s on s.id=c.source_id
+  where s.status='ready' and s.enabled=true and c.embedding is not null
+    and 1-(c.embedding OPERATOR(extensions.<=>) query_embedding)>=similarity_threshold
+  order by c.embedding OPERATOR(extensions.<=>) query_embedding
+  limit greatest(1,least(match_count,30));
+$$;
+
+create or replace function public.private_ai_match_memories(
+  query_embedding extensions.vector, match_count integer default 12,
+  similarity_threshold double precision default 0.24
+)
+returns table(id uuid,memory_key text,content text,category text,importance smallint,pinned boolean,similarity double precision)
+language sql stable security definer set search_path=''
+as $$
+  select m.id,m.memory_key,public.private_ai_decrypt_text(m.content),m.category,m.importance,m.pinned,
+         1-(m.embedding OPERATOR(extensions.<=>) query_embedding)
+  from public.private_ai_memories m
+  where m.active=true and m.embedding is not null
+    and (m.pinned=true or 1-(m.embedding OPERATOR(extensions.<=>) query_embedding)>=similarity_threshold)
+  order by m.pinned desc,m.importance desc,m.embedding OPERATOR(extensions.<=>) query_embedding
+  limit greatest(1,least(match_count,30));
+$$;
+
+revoke all on function public.private_ai_claim_knowledge_chunks(integer,integer) from public,anon,authenticated;
+revoke all on function public.private_ai_match_chunks(extensions.vector,integer,double precision) from public,anon,authenticated;
+revoke all on function public.private_ai_match_memories(extensions.vector,integer,double precision) from public,anon,authenticated;
+grant execute on function public.private_ai_claim_knowledge_chunks(integer,integer) to service_role;
+grant execute on function public.private_ai_match_chunks(extensions.vector,integer,double precision) to service_role;
+grant execute on function public.private_ai_match_memories(extensions.vector,integer,double precision) to service_role;
+
+-- Keep the worker authentication secret out of the runtime table too.
+do $$
+declare existing_token text;
+begin
+  if not exists(select 1 from vault.decrypted_secrets where name='private_ai_worker_token') then
+    select worker_token into existing_token from public.private_ai_runtime_config where id=true;
+    if existing_token is null or length(existing_token)<20 then
+      existing_token:=pg_catalog.encode(extensions.gen_random_bytes(32),'hex');
+    end if;
+    perform vault.create_secret(existing_token,'private_ai_worker_token','Uncensor AI background worker authentication');
+  end if;
+end $$;
+
+create or replace function public.private_ai_worker_token()
+returns text language sql stable security definer set search_path=''
+as $$ select decrypted_secret from vault.decrypted_secrets where name='private_ai_worker_token' limit 1 $$;
+
+create or replace function public.private_ai_validate_worker_token(candidate text)
+returns boolean language sql stable security definer set search_path=''
+as $$
+  select candidate is not null and length(candidate)>=20
+    and extensions.digest(candidate,'sha256')=extensions.digest(public.private_ai_worker_token(),'sha256')
+$$;
+
+create or replace function public.private_ai_dispatch_worker()
+returns bigint language plpgsql security definer set search_path=''
+as $$
+declare project_url text; token text; request_id bigint;
+begin
+  select c.project_url into project_url from public.private_ai_runtime_config c where c.id=true;
+  token:=public.private_ai_worker_token();
+  if project_url is null or token is null then return null; end if;
+  select net.http_post(
+    url:=rtrim(project_url,'/')||'/functions/v1/uncensor-worker',
+    headers:=jsonb_build_object('Content-Type','application/json','x-worker-token',token),
+    body:='{}'::jsonb,timeout_milliseconds:=120000
+  ) into request_id;
+  return request_id;
+end;
+$$;
+
+revoke all on function public.private_ai_worker_token() from public,anon,authenticated;
+revoke all on function public.private_ai_validate_worker_token(text) from public,anon,authenticated;
+grant execute on function public.private_ai_validate_worker_token(text) to service_role;
+
+update public.private_ai_runtime_config
+set worker_token=null,backend_version='v5-private',updated_at=now()
+where id=true;
+
+select cron.unschedule(jobid) from cron.job where jobname='uncensor-ai-background-worker';
+select cron.schedule(
+  'uncensor-ai-background-worker',
+  '10 seconds',
+  $$ select public.private_ai_dispatch_worker(); $$
+);
