@@ -1,0 +1,8 @@
+{
+  "name": "uncensor-ai",
+  "private": true,
+  "version": "29.0.0",
+  "scripts": {
+    "test": "node --check app.js && node tests/stability-smoke.mjs"
+  }
+}
