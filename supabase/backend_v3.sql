@@ -1626,3 +1626,14 @@ as $$
 $$;
 revoke all on function public.private_ai_match_chunks_for_chat(extensions.vector,uuid,integer,double precision) from public,anon,authenticated;
 grant execute on function public.private_ai_match_chunks_for_chat(extensions.vector,uuid,integer,double precision) to service_role;
+
+
+-- v24: no-assignment means Global Knowledge.
+-- This is idempotent and upgrades older "unassigned" rows into the safe/default Global scope.
+update public.private_ai_knowledge_sources s
+set global_enabled=true, updated_at=now()
+where global_enabled=false
+  and not exists (
+    select 1 from public.private_ai_chat_knowledge ck
+    where ck.source_id=s.id
+  );
