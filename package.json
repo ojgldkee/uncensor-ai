@@ -1,8 +1,8 @@
 {
   "name": "uncensor-ai",
   "private": true,
-  "version": "29.0.0",
+  "version": "32.0.0",
   "scripts": {
-    "test": "node --check app.js && node tests/stability-smoke.mjs"
+    "test": "node --check app.js && node --check supabase/functions/uncensor-api/knowledge-ranking.mjs && node tests/stability-smoke.mjs && node tests/knowledge-retrieval.mjs"
   }
 }
