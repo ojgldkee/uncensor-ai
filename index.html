@@ -15,8 +15,8 @@
     .hidden{display:none!important}
     #app{min-height:100dvh}
   </style>
-  <link rel="manifest" href="./manifest.webmanifest?v=15" />
-  <link rel="stylesheet" href="./styles.css?v=15" />
+  <link rel="manifest" href="./manifest.webmanifest?v=16" />
+  <link rel="stylesheet" href="./styles.css?v=16" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -252,7 +252,9 @@
       </div>
       <label class="setting-stack"><span><strong>Custom instructions</strong><small>Added to the server-side assistant prompt for your requests.</small></span><textarea id="stylePrompt" rows="7"></textarea></label>
       <div class="settings-info"><span>Status</span><strong id="settingsStatus">Checking…</strong></div>
-      <div class="settings-info"><span>Storage</span><strong>Chats + knowledge persist in Supabase</strong></div>
+      <div class="settings-info"><span>Security health</span><strong id="securityHealth">Checking…</strong></div>
+      <div id="securityHealthDetail" class="security-health-detail">Encrypted storage, private bucket, device sessions, worker health, and public-access checks are verified automatically.</div>
+      <div class="settings-info"><span>Storage</span><strong>Vault-encrypted chats + knowledge in Supabase</strong></div>
       <button id="saveSettings" class="primary-btn">Save settings</button>
     </div>
   </div>
@@ -270,7 +272,7 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="./config.js?v=15"></script>
-  <script src="./app.js?v=15" defer></script>
+  <script src="./config.js?v=16"></script>
+  <script src="./app.js?v=16" defer></script>
 </body>
 </html>
