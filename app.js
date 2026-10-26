@@ -520,8 +520,10 @@ async function sha256File(file){
   return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 function stageKnowledgeFiles(files){
-  state.knowledgeFileUploads=[...files].map((file,i)=>({id:String(Date.now())+'-'+i,name:file.name,size:file.size,status:'selected',label:'selected',pct:0,detail:'Ready to add',sourceIds:[],file,signature:file.name+'|'+file.size+'|'+file.lastModified}));
+  const rows=[...files].map((file,i)=>({id:String(Date.now())+'-'+i+'-'+Math.random(),name:file.name,size:file.size,status:'selected',label:'selected',pct:0,detail:'Ready to add',sourceIds:[],file,signature:file.name+'|'+file.size+'|'+file.lastModified}));
+  state.knowledgeFileUploads.push(...rows);
   renderKnowledgeFileQueue();
+  return rows;
 }
 function stageTextKnowledgeFiles(files){
   const existing=new Set((state.knowledgeFileUploads||[]).filter(r=>r.status==='selected').map(r=>r.signature));
@@ -681,7 +683,7 @@ async function ingestKnowledgeMedia(){
   if(!file){toast('Choose a video or audio file first.');return;}
   if(file.size>100*1024*1024){toast('This upload is over the current 100 MB limit.',4500);return;}
   const btn=$('saveKnowledgeMedia');btn.disabled=true;
-  stageKnowledgeFiles([file]);const row=state.knowledgeFileUploads[0];$('ingestProgress').classList.remove('hidden');
+  const [row]=stageKnowledgeFiles([file]);$('ingestProgress').classList.remove('hidden');
   try{
     setKnowledgeFileStatus(row,'fingerprinting',3,'Computing exact SHA-256','checking');
     const sha=await sha256File(file);row.sha256=sha;
