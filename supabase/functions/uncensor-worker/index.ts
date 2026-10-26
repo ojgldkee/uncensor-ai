@@ -234,7 +234,7 @@ async function processKnowledgeBatch() {
 }
 
 async function processMemoryBackfillBatch() {
-  const q = await db.from('private_ai_memories')
+  const q = await db.from('private_ai_memories_read')
     .select('id,content')
     .eq('active', true)
     .is('embedding', null)
@@ -261,7 +261,7 @@ async function processHtmlReprocess(job: QueueJob) {
 
   const rows:any[]=[]
   for(let from=0;;from+=1000){
-    const page=await db.from('private_ai_knowledge_chunks')
+    const page=await db.from('private_ai_knowledge_chunks_read')
       .select('chunk_index,content').eq('source_id',sourceId)
       .order('chunk_index',{ascending:true}).range(from,from+999)
     if(page.error)throw page.error
@@ -305,7 +305,7 @@ async function processSummary(job: QueueJob) {
   const target = Number(job.message.target_message_count || 0)
   if (!conversationId || !target) { await archive(job.msg_id); return 'invalid summary job' }
 
-  const conv = await db.from('private_ai_conversations')
+  const conv = await db.from('private_ai_conversations_read')
     .select('id,title,rolling_summary,summary_through_message_count,total_message_count,summary_version')
     .eq('id', conversationId).maybeSingle()
   if (conv.error) throw conv.error
@@ -315,7 +315,7 @@ async function processSummary(job: QueueJob) {
   const actualTarget = Math.min(target, Number(conv.data.total_message_count || target))
   if (actualTarget <= through) { await finish(job.msg_id); return 'summary already current' }
 
-  const msgs = await db.from('private_ai_messages')
+  const msgs = await db.from('private_ai_messages_read')
     .select('role,content,created_at').eq('conversation_id', conversationId)
     .order('created_at', { ascending: true })
     .range(through, Math.max(through, actualTarget - 1))
@@ -353,12 +353,12 @@ async function processMemories(job: QueueJob) {
   const conversationId = String(job.message.conversation_id || '')
   if (!conversationId) { await archive(job.msg_id); return 'invalid memory job' }
 
-  const conv = await db.from('private_ai_conversations')
+  const conv = await db.from('private_ai_conversations_read')
     .select('title,rolling_summary').eq('id', conversationId).maybeSingle()
   if (conv.error) throw conv.error
   if (!conv.data) { await finish(job.msg_id); return 'conversation deleted' }
 
-  const recent = await db.from('private_ai_messages')
+  const recent = await db.from('private_ai_messages_read')
     .select('id,role,content,created_at').eq('conversation_id', conversationId)
     .order('created_at', { ascending: false }).limit(18)
   if (recent.error) throw recent.error
