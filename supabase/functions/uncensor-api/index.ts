@@ -76,6 +76,31 @@ async function rotateRecoveryKey(req:Request) {
   return json({ok:true,recovery_key,shown_once:true})
 }
 
+async function issuePairingCode(req:Request) {
+  const session=req.headers.get('x-uncensor-session')||''
+  if(!session)return json({error:'An enrolled device is required.'},401)
+  const q=await db.rpc('private_ai_issue_pairing_code',{session_candidate:session})
+  if(q.error)throw q.error
+  const row=(q.data||[])[0]
+  if(!row?.pairing_code)return json({error:'This device session is not valid.'},401)
+  return json({ok:true,pairing_code:row.pairing_code,pairing_id:row.pairing_id,expires_at:row.expires_at})
+}
+
+async function redeemPairingCode(req:Request) {
+  const limited=await db.rpc('private_ai_take_enrollment_limit',{minute_limit:6})
+  if(limited.error)return json({error:'Device-link limiter unavailable.'},503)
+  if(limited.data!==true)return json({error:'Too many link attempts. Try again in a minute.',rate_limited:true},429)
+  const body=await req.json().catch(()=>({}))
+  const code=String(body?.pairing_code||'').trim()
+  const name=String(body?.device_name||'Private device').slice(0,120)
+  if(!code)return json({error:'Link code is required.'},400)
+  const q=await db.rpc('private_ai_redeem_pairing_code',{pairing_candidate:code,requested_device_name:name})
+  if(q.error)throw q.error
+  const row=(q.data||[])[0]
+  if(!row?.session_token)return json({error:'That link code is invalid, expired, or already used.'},401)
+  return json({ok:true,session_token:row.session_token,session_id:row.id,expires_at:row.expires_at})
+}
+
 async function enrollDevice(req: Request) {
   const limited=await db.rpc('private_ai_take_enrollment_limit',{minute_limit:6})
   if(limited.error)return json({error:'Enrollment limiter unavailable.'},503)
@@ -1186,6 +1211,7 @@ Deno.serve(async (req) => {
 
   if (path === '/api/status' && req.method === 'GET') return statusRoute()
   if (path === '/api/session/enroll' && req.method === 'POST') return enrollDevice(req)
+  if (path === '/api/session/redeem-pairing' && req.method === 'POST') return redeemPairingCode(req)
   if (!(await authorized(req))) return json({ error: 'Private device session or access key required', requires_access_key: true }, 401)
 
   try {
@@ -1193,6 +1219,7 @@ Deno.serve(async (req) => {
     if (path === '/api/chat' && req.method === 'POST') return chat(req)
     if (path === '/api/research' && req.method === 'POST') return research(req)
     if (path === '/api/sessions' && req.method === 'GET') return listDeviceSessions()
+    if (path === '/api/session/pairing-code' && req.method === 'POST') return issuePairingCode(req)
     if (path === '/api/security/recovery-key/rotate' && req.method === 'POST') return rotateRecoveryKey(req)
     if (path === '/api/uploads/sign' && req.method === 'POST') return signUpload(req)
     if (path === '/api/uploads/discard' && req.method === 'POST') return discardUpload(req)
