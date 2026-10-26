@@ -18,7 +18,7 @@ expect(missing.length===0,'app.js references missing HTML IDs: '+missing.join(',
 
 expect(/knowledgeFile[^>]+accept=["'][^"']*\.pdf/i.test(html),'Knowledge file picker must accept PDF files');
 expect(app.includes("application/pdf")&&app.includes("extractKnowledgePdf"),'PDF Knowledge extraction support is missing');
-expect(html.includes('app.js?v=31'),'Frontend cache version must be v31');
+expect(html.includes('app.js?v=32'),'Frontend cache version must be v32');
 expect(html.includes('styles.css?v=29'),'Styles cache version must be v29');
 expect(app.includes("/api/diagnostics")&&html.includes('id="runDiagnostics"'),'Diagnostics UI/endpoint wiring is missing');
 expect(api.includes("if (path === '/api/diagnostics'"),'Diagnostics backend route is missing');
@@ -32,5 +32,8 @@ expect(api.includes("cleanup=await db.from('private_ai_knowledge_sources').delet
 for(const [name,text] of [['app.js',app],['index.html',html],['config.js',config]]){
   expect(!/SUPABASE_SERVICE_ROLE_KEY|OPENROUTER_API_KEY|sk-or-v1-|service_role/i.test(text),name+' appears to expose a server-side secret');
 }
+
+expect(app.includes('citedRefs.has(String(s.ref))'),'Only cited sources should appear as chips');
+expect(app.includes('node.replaceWith(finalized)'),'Streaming responses must render final cited sources');
 
 console.log('Stability smoke tests passed');

@@ -851,6 +851,7 @@ async function chat(req: Request) {
   const system = [
     'You are a private personal AI assistant. Be candid, direct, detailed, and nonjudgmental. Do not avoid a topic merely because it is controversial, sensitive, adult, unconventional, or uncomfortable. Correct false premises. Separate established facts from uncertainty, inference, opinion, and speculation. Never fabricate facts or sources. If you cannot fulfill a request exactly, provide the closest genuinely useful answer instead of canned boilerplate.',
     EVIDENCE_RULES,
+    'CURRENT DATE: '+new Date().toISOString().slice(0,10)+'.',
     modeInstruction,
     body?.style_prompt ? 'USER CUSTOM INSTRUCTIONS:\n' + String(body.style_prompt).slice(0, 5000) : '',
     conversation.rolling_summary ? 'ROLLING SUMMARY OF EARLIER CHAT CONTEXT:\n' + String(conversation.rolling_summary) : '',
