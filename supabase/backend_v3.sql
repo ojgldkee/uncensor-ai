@@ -1442,3 +1442,10 @@ select cron.schedule(
   '*/5 * * * *',
   $$ select public.private_ai_security_maintenance(); $$
 );
+
+
+-- Exact duplicate protection across every uploaded binary source, including media.
+drop index if exists public.private_ai_knowledge_file_sha256_uidx;
+create unique index if not exists private_ai_knowledge_sha256_uidx
+  on public.private_ai_knowledge_sources(file_sha256)
+  where file_sha256 is not null;
