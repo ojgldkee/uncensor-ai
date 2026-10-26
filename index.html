@@ -15,8 +15,8 @@
     .hidden{display:none!important}
     #app{min-height:100dvh}
   </style>
-  <link rel="manifest" href="./manifest.webmanifest?v=17" />
-  <link rel="stylesheet" href="./styles.css?v=17" />
+  <link rel="manifest" href="./manifest.webmanifest?v=18" />
+  <link rel="stylesheet" href="./styles.css?v=18" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -166,6 +166,8 @@
             <option value="website">Websites</option>
             <option value="paste">Notes / pasted text</option>
             <option value="file">Files</option>
+            <option value="video">Videos</option>
+            <option value="audio">Audio</option>
           </select>
           <select id="knowledgeStatusFilter" class="knowledge-filter">
             <option value="all">All status</option>
@@ -206,6 +208,22 @@
             <input id="knowledgeTitleInput" type="text" maxlength="160" placeholder="Source title" />
             <textarea id="knowledgeText" rows="8" maxlength="5000000" placeholder="Paste notes, transcripts, research, course material, code, or long documents here…"></textarea>
             <button id="saveKnowledge" class="primary-btn">Add text to Knowledge</button>
+          </div>
+
+          <div class="knowledge-add-card knowledge-media-card">
+            <div class="knowledge-add-card-icon">▶</div>
+            <h3>Video / audio reference</h3>
+            <p>Turn courses, screen recordings, webinars, podcasts, and ad-training videos into permanent timestamped Knowledge.</p>
+            <input id="knowledgeMediaFile" type="file" accept="video/*,audio/*,.mp4,.mov,.m4v,.webm,.mp3,.m4a,.wav,.aac,.ogg" />
+            <label class="media-mode-label">Processing mode
+              <select id="knowledgeMediaMode">
+                <option value="full">Transcript + visual analysis</option>
+                <option value="transcript">Transcript / spoken content only</option>
+              </select>
+            </label>
+            <div id="knowledgeMediaPreview" class="media-upload-preview hidden"></div>
+            <small>The original stays in private Storage. Exact duplicates are blocked. Up to 100 MB per upload. Processing continues after you close the browser.</small>
+            <button id="saveKnowledgeMedia" class="primary-btn">Add media to Knowledge</button>
           </div>
 
           <div class="knowledge-add-card">
@@ -272,7 +290,7 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="./config.js?v=17"></script>
-  <script src="./app.js?v=17" defer></script>
+  <script src="./config.js?v=18"></script>
+  <script src="./app.js?v=18" defer></script>
 </body>
 </html>
