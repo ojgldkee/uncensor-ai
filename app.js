@@ -17,7 +17,7 @@ Give concrete specifics, examples, calculations, tradeoffs, edge cases, likely f
 Be concise when the answer is simple and thorough when the problem is complicated. Avoid canned disclaimers, repetitive caveats, fake neutrality, and refusal boilerplate. If some narrow part cannot be fulfilled, say so briefly and immediately continue with the closest genuinely useful answer.`;
 const savedStyle=localStorage.getItem('uncensor.style');
 if(!savedStyle||savedStyle===LEGACY_DEFAULT_STYLE)localStorage.setItem('uncensor.style',DEFAULT_STYLE);
-const state={conversations:[],activeId:null,activeConversation:null,messages:[],knowledge:[],knowledgeScope:'global',knowledgeLoadSeq:0,knowledgeSelected:new Set(),knowledgeVisibleIds:[],moveKnowledgeSources:[],renameChatTarget:null,memories:[],pendingAttachments:[],knowledgeFileUploads:[],knowledgePollTimer:null,webResearch:localStorage.getItem('uncensor.webResearch')==='true',webResearchEnabled:false,sending:false,abort:null,knowledgeEnabled:localStorage.getItem('uncensor.knowledge')!=='false',showSources:localStorage.getItem('uncensor.sources')!=='false',mode:localStorage.getItem('uncensor.mode')||'direct',style:localStorage.getItem('uncensor.style')||DEFAULT_STYLE};
+const state={conversations:[],activeId:null,activeConversation:null,messages:[],knowledge:[],knowledgeScope:'global',knowledgeLoadSeq:0,knowledgeChatCount:0,knowledgeGlobalCount:0,knowledgeSelected:new Set(),knowledgeVisibleIds:[],moveKnowledgeSources:[],renameChatTarget:null,memories:[],pendingAttachments:[],knowledgeFileUploads:[],knowledgePollTimer:null,webResearch:localStorage.getItem('uncensor.webResearch')==='true',webResearchEnabled:false,sending:false,abort:null,knowledgeEnabled:localStorage.getItem('uncensor.knowledge')!=='false',showSources:localStorage.getItem('uncensor.sources')!=='false',mode:localStorage.getItem('uncensor.mode')||'direct',style:localStorage.getItem('uncensor.style')||DEFAULT_STYLE};
 
 function esc(v){return String(v||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
 function md(v){let s=esc(v);s=s.replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h1>$1</h1>');s=s.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>');return s.split(/\n{2,}/).map(p=>/^<h\d/.test(p)?p:'<p>'+p.replace(/\n/g,'<br>')+'</p>').join('');}
@@ -166,7 +166,19 @@ async function health(){
 function renderConversations(){const root=$('conversationList');root.innerHTML='';const q=$('chatSearch').value.trim().toLowerCase();const rows=state.conversations.filter(c=>!q||String(c.title||'').toLowerCase().includes(q));$('chatCount').textContent=String(state.conversations.length);if(!rows.length){root.innerHTML='<div class="empty-list">'+(q?'No matching chats.':'No saved chats yet.')+'</div>';return;}rows.forEach(c=>{const el=document.createElement('div');el.className='conversation-item'+(c.id===state.activeId?' active':'');const open=document.createElement('button');open.className='conversation-open';open.innerHTML='<span class="title">'+(c.pinned?'★ ':'')+esc(c.title||'New chat')+'</span><small>'+when(c.updated_at)+'</small>';open.onclick=()=>openChat(c.id);const a=document.createElement('div');a.className='conversation-actions';const pin=document.createElement('button');pin.textContent=c.pinned?'★':'☆';pin.title=c.pinned?'Unpin':'Pin';pin.onclick=e=>{e.stopPropagation();patchChat(c.id,{pinned:!c.pinned});};const ren=document.createElement('button');ren.textContent='✎';ren.title='Rename';ren.onclick=e=>{e.stopPropagation();renameChat(c.id,c.title);};const del=document.createElement('button');del.textContent='×';del.className='danger-hover';del.title='Delete permanently';del.onclick=e=>{e.stopPropagation();deleteChat(c.id,c.title);};a.append(pin,ren,del);el.append(open,a);root.append(el);});}
 async function loadChats(){try{const d=await api('/api/conversations');state.conversations=d.conversations||[];if(state.activeId)state.activeConversation=state.conversations.find(x=>x.id===state.activeId)||state.activeConversation;renderConversations();header();}catch{state.conversations=[];renderConversations();}}
 async function openChat(id){state.activeId=id;try{const d=await api('/api/conversations/'+encodeURIComponent(id));state.activeConversation=d.conversation;state.messages=d.messages||[];renderMessages();renderConversations();header();syncKnowledgeScopeUI();if(!$('knowledgeModal').classList.contains('hidden'))loadKnowledge();closeSidebar();}catch(e){toast(e.message);}}
-async function patchChat(id,p){try{await api('/api/conversations/'+encodeURIComponent(id),{method:'PATCH',body:JSON.stringify(p)});await loadChats();return true;}catch(e){toast(e.message||'Could not update chat',4000);throw e;}}
+async function patchChat(id,p){try{const d=await api('/api/conversations/'+encodeURIComponent(id),{method:'PATCH',body:JSON.stringify(p)});if(id===state.activeId&&d.conversation)state.activeConversation=d.conversation;await loadChats();return d.conversation||true;}catch(e){toast(e.message||'Could not update chat',4000);throw e;}}
+async function setUseGlobalKnowledge(enabled){
+  if(!state.activeId)return;
+  const toggle=$('useGlobalKnowledgeToggle');toggle.disabled=true;
+  try{
+    await patchChat(state.activeId,{use_global_knowledge:Boolean(enabled)});
+    syncKnowledgeScopeUI();
+    toast(enabled?'Global Knowledge enabled for '+activeTitle():'Focused mode enabled · Global Knowledge off',3500);
+  }catch(e){
+    toggle.checked=!enabled;
+    toast(e.message||'Could not update Knowledge mode',4000);
+  }finally{toggle.disabled=false;}
+}
 function renameChat(id=state.activeId,current=activeTitle()){
   if(!id){toast('Send a message first, then you can name the saved chat.',3500);return;}
   state.renameChatTarget={id,current:current||'New chat'};
@@ -326,17 +338,33 @@ function knowledgeLogicalSources(items){
 function syncKnowledgeScopeUI(){
   if(state.knowledgeScope==='chat'&&!state.activeId)state.knowledgeScope='global';
   const chat=state.knowledgeScope==='chat',global=state.knowledgeScope==='global';
+  const title=state.activeConversation?.title||'this chat';
+  const shortTitle=title.length>18?title.slice(0,18)+'…':title;
+  const useGlobal=state.activeConversation?.use_global_knowledge===true;
+
   $('knowledgeLibraryTab').classList.toggle('active',chat);
   $('knowledgeLibraryTab').disabled=!state.activeId;
+  $('knowledgeLibraryTab').textContent=state.activeId?shortTitle:'This chat';
   $('knowledgeGlobalTab').classList.toggle('active',global);
-  const title=state.activeConversation?.title||'this chat';
+
+  $('knowledgeTitle').textContent=chat?'Knowledge · '+title:'Global Knowledge';
   $('knowledgeScopeDescription').textContent=chat
-    ? 'Everything "'+title+'" can retrieve: its chat-only sources plus all Global Knowledge.'
-    : 'Global Knowledge is available to every chat automatically. Sources with no chat assignment live here.';
-  $('knowledgeSearch').placeholder=chat?"Search everything this chat can use…":"Search Global Knowledge…";
+    ? 'Only sources assigned specifically to "'+title+'" are shown here.'
+    : 'General sources live here. A specialist chat only uses them when you turn Global Knowledge on for that chat.';
+  $('knowledgeSearch').placeholder=chat?'Search '+title+' sources…':'Search Global Knowledge…';
   $('knowledgeAddScopeText').textContent=state.activeId
-    ? 'New sources start as chat-only for "'+title+'". Use Move to make them Global or transfer them to another specialist chat.'
+    ? 'Anything you add here becomes specialist Knowledge for "'+title+'" only.'
     : 'Send one message first so this chat exists, then add specialist Knowledge to it.';
+
+  const mode=$('chatKnowledgeMode');
+  mode.classList.toggle('hidden',!chat);
+  if(chat){
+    $('useGlobalKnowledgeToggle').checked=useGlobal;
+    $('chatKnowledgeModeTitle').textContent=useGlobal?'Focused + Global':'Focused mode';
+    $('chatKnowledgeModeText').textContent=useGlobal
+      ? state.knowledgeChatCount+' '+title+' source'+(state.knowledgeChatCount===1?'':'s')+' + '+state.knowledgeGlobalCount+' Global source'+(state.knowledgeGlobalCount===1?'':'s')+' can be retrieved.'
+      : 'Only the '+state.knowledgeChatCount+' source'+(state.knowledgeChatCount===1?'':'s')+' assigned to '+title+' can be retrieved. Global is off.';
+  }
 }
 function switchKnowledgeTab(tab){
   const prevScope=state.knowledgeScope;
@@ -440,7 +468,7 @@ function renderKnowledge(){
   state.knowledgeVisibleIds=rows.map(x=>String(x.id));
   syncKnowledgeBulkUI();
   if(!rows.length){
-    root.innerHTML='<div class="knowledge-empty"><div class="knowledge-empty-icon">▤</div><strong>'+(all.length?'No matching sources':(state.knowledgeScope==='chat'?'This chat has no usable Knowledge yet':'No Global Knowledge yet'))+'</strong><p>'+(all.length?'Try a different search or filter.':(state.knowledgeScope==='chat'?'Add specialist sources here or move general sources to Global.':'Sources without a specific chat assignment appear here automatically.'))+'</p>'+(all.length||state.knowledgeScope!=='chat'?'':'<button id="emptyAddKnowledge" class="primary-btn">＋ Add source to this chat</button>')+'</div>';
+    root.innerHTML='<div class="knowledge-empty"><div class="knowledge-empty-icon">▤</div><strong>'+(all.length?'No matching sources':(state.knowledgeScope==='chat'?'No '+esc(activeTitle())+' sources yet':'No Global Knowledge yet'))+'</strong><p>'+(all.length?'Try a different search or filter.':(state.knowledgeScope==='chat'?'Add only the sources you want this specialist chat to know.':'Put general-purpose sources here when you want multiple chats to share them.'))+'</p>'+(all.length||state.knowledgeScope!=='chat'?'':'<button id="emptyAddKnowledge" class="primary-btn">＋ Add source to '+esc(activeTitle())+'</button>')+'</div>';
     const b=$('emptyAddKnowledge');if(b)b.onclick=()=>switchKnowledgeTab('add');
     return;
   }
@@ -572,7 +600,11 @@ async function loadKnowledge(){
     $('knowledgeList').setAttribute('aria-busy','true');
     const d=await api('/api/knowledge'+qs);
     if(seq!==state.knowledgeLoadSeq||scope!==state.knowledgeScope||conversationId!==(state.activeId||''))return;
-    state.knowledge=d.sources||[];renderKnowledge();updateKnowledgeUploadRows();scheduleKnowledgePoll();
+    state.knowledge=d.sources||[];
+    state.knowledgeChatCount=Number(d.chat_count||0);
+    state.knowledgeGlobalCount=Number(d.global_count||0);
+    if(state.activeConversation&&scope==='chat')state.activeConversation.use_global_knowledge=d.use_global_knowledge===true;
+    syncKnowledgeScopeUI();renderKnowledge();updateKnowledgeUploadRows();scheduleKnowledgePoll();
   }catch(e){
     if(seq!==state.knowledgeLoadSeq)return;
     $('knowledgeList').innerHTML='<div class="error-list">'+esc(e.message)+'</div>';$('knowledgeCount').textContent='Load failed';
@@ -844,7 +876,7 @@ $('videoInput').onchange=e=>addFiles(e.target.files);
 $('addWebsiteAttachment').onclick=addWebsiteAttachment;
 $('websiteUrlInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();addWebsiteAttachment();}};
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));document.querySelectorAll('.modal').forEach(m=>m.onclick=e=>{if(e.target===m)closeModal(m.id);});
-$('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeGlobalTab').onclick=()=>switchKnowledgeTab('global');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;bindFileDropzone('knowledgeFile','knowledgeFileDropzone','knowledgeTextFileLabel',files=>stageTextKnowledgeFiles(files));$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('knowledgeSelectAll').onchange=e=>toggleAllVisibleKnowledge(e.target.checked);$('bulkMoveKnowledge').onclick=openBulkMoveKnowledge;$('clearKnowledgeSelection').onclick=()=>clearKnowledgeSelection();bindFileDropzone('knowledgeMediaFile','knowledgeMediaDropzone','knowledgeMediaFileLabel',files=>previewKnowledgeMedia(files[0]||null));$('saveKnowledgeMedia').onclick=ingestKnowledgeMedia;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
+$('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeGlobalTab').onclick=()=>switchKnowledgeTab('global');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('useGlobalKnowledgeToggle').onchange=e=>setUseGlobalKnowledge(e.target.checked);$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;bindFileDropzone('knowledgeFile','knowledgeFileDropzone','knowledgeTextFileLabel',files=>stageTextKnowledgeFiles(files));$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('knowledgeSelectAll').onchange=e=>toggleAllVisibleKnowledge(e.target.checked);$('bulkMoveKnowledge').onclick=openBulkMoveKnowledge;$('clearKnowledgeSelection').onclick=()=>clearKnowledgeSelection();bindFileDropzone('knowledgeMediaFile','knowledgeMediaDropzone','knowledgeMediaFileLabel',files=>previewKnowledgeMedia(files[0]||null));$('saveKnowledgeMedia').onclick=ingestKnowledgeMedia;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
 $('webToggle').onclick=()=>{state.webResearch=!state.webResearch;localStorage.setItem('uncensor.webResearch',String(state.webResearch));syncSettings();if(state.webResearch&&!state.webResearchEnabled)toast('Web Research is temporarily unavailable.',4500);};$('knowledgeToggle').onclick=()=>{state.knowledgeEnabled=!state.knowledgeEnabled;localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));syncSettings();};
 $('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);$('exportFullBackup').onclick=exportFullBackup;$('saveRenameChat').onclick=saveChatRename;$('cancelRenameChat').onclick=()=>closeModal('renameChatModal');$('renameChatInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();saveChatRename();}};$('confirmMoveKnowledge').onclick=confirmMoveKnowledge;$('cancelMoveKnowledge').onclick=()=>closeModal('moveKnowledgeModal');$('revokeThisDevice').onclick=revokeCurrentDevice;$('generatePairingCode').onclick=generatePairingCode;$('redeemPairingCode').onclick=redeemPairingCode;$('pairingCodeInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();redeemPairingCode();}};$('rotateRecoveryKey').onclick=rotateRecoveryKeyFromDevice;$('copyRecoveryKey').onclick=()=>{const v=$('recoveryKeyValue').textContent||'';if(v){navigator.clipboard.writeText(v);toast('Recovery key copied');}};
 $('saveSettings').onclick=async()=>{state.knowledgeEnabled=$('settingKnowledge').checked;state.showSources=$('settingSources').checked;state.mode=$('responseMode').value;state.style=$('stylePrompt').value.trim()||DEFAULT_STYLE;const k=$('accessKeyInput').value.trim();if(k)localStorage.setItem('uncensor.accessKey',k);localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));localStorage.setItem('uncensor.sources',String(state.showSources));localStorage.setItem('uncensor.mode',state.mode);localStorage.setItem('uncensor.style',state.style);try{if(accessKey())await enrollDeviceSession();syncSettings();closeModal('settingsModal');renderMessages();toast(sessionToken()?'Settings saved · device enrolled':'Settings saved');if(hasPrivateAuth())await Promise.all([loadChats(),loadKnowledge(),loadMemories(),status(),health()]);}catch(e){localStorage.removeItem('uncensor.accessKey');syncSettings();toast((e.message||'Could not enroll device')+' Use a one-time link code from your enrolled phone if needed.',5500);}};
