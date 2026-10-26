@@ -1079,6 +1079,18 @@ async function knowledgeUrlCreate(req: Request) {
   return createKnowledgeRecord(page.title || new URL(page.url).hostname, page.text, 'website', { url:page.url, collection:String(body?.collection || '').trim().slice(0,80) })
 }
 
+async function healthRoute() {
+  const run = await db.rpc('private_ai_security_maintenance')
+  if (run.error) {
+    const fallback = await db.from('private_ai_health_status').select('checked_at,status,details').eq('id',true).maybeSingle()
+    if (fallback.error) throw fallback.error
+    return json({ ok:false, status:fallback.data?.status || 'attention', checked_at:fallback.data?.checked_at || null, details:fallback.data?.details || {}, maintenance_error:run.error.message })
+  }
+  const q = await db.from('private_ai_health_status').select('checked_at,status,details').eq('id',true).maybeSingle()
+  if (q.error) throw q.error
+  return json({ ok:true, status:q.data?.status || 'unknown', checked_at:q.data?.checked_at || null, details:q.data?.details || run.data || {} })
+}
+
 async function statusRoute() {
   const spend = await rollingSpend()
   const cfg = await db.from('private_ai_runtime_config')
@@ -1118,6 +1130,7 @@ Deno.serve(async (req) => {
   if (!(await authorized(req))) return json({ error: 'Private device session or access key required', requires_access_key: true }, 401)
 
   try {
+    if (path === '/api/health' && req.method === 'GET') return healthRoute()
     if (path === '/api/chat' && req.method === 'POST') return chat(req)
     if (path === '/api/research' && req.method === 'POST') return research(req)
     if (path === '/api/sessions' && req.method === 'GET') return listDeviceSessions()
