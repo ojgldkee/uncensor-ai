@@ -976,10 +976,17 @@ async function knowledgeList(req: Request) {
     arr.push(String(m.conversation_id));bySource.set(sid,arr)
   }
   let rows=(sources.data||[]).map((s:any)=>({...s,conversation_ids:bySource.get(String(s.id))||[]}))
-  if(scope==='chat')rows=conversationId?rows.filter((s:any)=>s.conversation_ids.includes(conversationId)):[]
-  else if(scope==='global')rows=rows.filter((s:any)=>s.global_enabled===true)
-  else if(scope==='unassigned')rows=rows.filter((s:any)=>!s.global_enabled&&!s.conversation_ids.length)
-  return json({sources:rows,scope,conversation_id:conversationId||null})
+  // No chat assignment means Global. This fallback keeps older rows/cached clients safe.
+  const isGlobal=(s:any)=>s.global_enabled===true || !s.conversation_ids.length
+  if(scope==='chat'){
+    rows=conversationId
+      ? rows.filter((s:any)=>isGlobal(s)||s.conversation_ids.includes(conversationId))
+      : rows.filter((s:any)=>isGlobal(s))
+  }else if(scope==='global'||scope==='unassigned'){
+    // "unassigned" is a backwards-compatible alias for Global; there is no dead storage scope anymore.
+    rows=rows.filter((s:any)=>isGlobal(s))
+  }
+  return json({sources:rows,scope:scope==='unassigned'?'global':scope,conversation_id:conversationId||null})
 }
 
 async function attachKnowledgeSource(conversationId:string,sourceId:string){
@@ -1037,7 +1044,8 @@ async function moveKnowledgeSource(sourceId:string,target:string,conversationId=
     return
   }
   if(target==='unassigned'){
-    const u=await db.from('private_ai_knowledge_sources').update({global_enabled:false,updated_at:new Date().toISOString()}).in('id',ids)
+    // Backwards compatibility for cached v23 clients: old "Unassigned" now means Global.
+    const u=await db.from('private_ai_knowledge_sources').update({global_enabled:true,updated_at:new Date().toISOString()}).in('id',ids)
     if(u.error)throw u.error
     const d=await db.from('private_ai_chat_knowledge').delete().in('source_id',ids)
     if(d.error)throw d.error
@@ -1412,9 +1420,19 @@ Deno.serve(async (req) => {
       if (req.method === 'DELETE') {
         const conversationId=String(new URL(req.url).searchParams.get('conversation_id')||'').trim()
         if(conversationId){
-          const q=await db.from('private_ai_chat_knowledge').delete().eq('conversation_id',conversationId).eq('source_id',id)
+          const ids=await groupedKnowledgeIds(id)
+          const q=await db.from('private_ai_chat_knowledge').delete().eq('conversation_id',conversationId).in('source_id',ids)
           if(q.error)throw q.error
-          return json({ok:true,removed_from_chat:true})
+          const remaining=await db.from('private_ai_chat_knowledge').select('source_id').in('source_id',ids)
+          if(remaining.error)throw remaining.error
+          const stillMapped=new Set((remaining.data||[]).map((x:any)=>String(x.source_id)))
+          const nowGlobal=ids.filter((x:string)=>!stillMapped.has(x))
+          if(nowGlobal.length){
+            const u=await db.from('private_ai_knowledge_sources')
+              .update({global_enabled:true,updated_at:new Date().toISOString()}).in('id',nowGlobal)
+            if(u.error)throw u.error
+          }
+          return json({ok:true,removed_from_chat:true,moved_to_global:nowGlobal.length>0})
         }
         const existing=await readKnowledgeSource(id)
         const storagePath=String(existing?.metadata?.storage_path||'')
