@@ -51,3 +51,7 @@
 .security-recovery small{display:block;margin-top:4px;color:#748096;font-size:9px;line-height:1.45}
 .recovery-key-box{display:flex;align-items:center;gap:8px;border:1px solid #31415a;background:#080d14;border-radius:10px;padding:8px}
 .recovery-key-box code{min-width:0;flex:1;overflow-wrap:anywhere;color:#bce6ff;font-size:9px;user-select:all}
+
+.security-health-detail{margin-top:-4px;padding:8px 10px;border:1px solid #273142;border-radius:10px;background:#0a0f17;color:#75839a;font-size:9px;line-height:1.45}
+.health-good{color:#78e3ac!important}
+.health-bad{color:#ff9a9f!important}
