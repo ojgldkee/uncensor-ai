@@ -45,3 +45,9 @@
 .message-actions .save-web:hover{background:#162338;color:#cfe4ff}
 #revokeThisDevice:disabled{opacity:.4;cursor:not-allowed}
 @media(max-width:780px){.topbar-right{gap:4px}.topbar-right .chip{padding:6px 6px;font-size:8px}.research-chip.active:before{display:none}}
+
+.security-recovery{border:1px solid #283244;background:#0b1018;border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:9px}
+.security-recovery strong{display:block;font-size:11px;color:#dce6f4}
+.security-recovery small{display:block;margin-top:4px;color:#748096;font-size:9px;line-height:1.45}
+.recovery-key-box{display:flex;align-items:center;gap:8px;border:1px solid #31415a;background:#080d14;border-radius:10px;padding:8px}
+.recovery-key-box code{min-width:0;flex:1;overflow-wrap:anywhere;color:#bce6ff;font-size:9px;user-select:all}
