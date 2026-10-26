@@ -47,6 +47,35 @@ async function authorized(req: Request) {
   return !check.error && check.data === true
 }
 
+async function authorizedDeviceSession(req: Request) {
+  const session=req.headers.get('x-uncensor-session')||''
+  if(!session)return false
+  const check=await db.rpc('private_ai_validate_device_session',{candidate:session})
+  return !check.error && check.data===true
+}
+
+function randomRecoveryKey() {
+  const bytes=crypto.getRandomValues(new Uint8Array(32))
+  let binary=''
+  for(const b of bytes)binary+=String.fromCharCode(b)
+  return 'uai_'+btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')
+}
+
+async function sha256Hex(value:string) {
+  const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))
+  return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('')
+}
+
+async function rotateRecoveryKey(req:Request) {
+  if(!(await authorizedDeviceSession(req)))return json({error:'An active private device session is required.'},401)
+  const recovery_key=randomRecoveryKey()
+  const access_token_hash=await sha256Hex(recovery_key)
+  const q=await db.from('private_ai_runtime_config')
+    .update({access_token_hash,updated_at:new Date().toISOString()}).eq('id',true)
+  if(q.error)throw q.error
+  return json({ok:true,recovery_key,shown_once:true})
+}
+
 async function enrollDevice(req: Request) {
   const candidate = req.headers.get('x-uncensor-key') || ''
   if (!candidate) return json({ error:'Master access key required.', requires_access_key:true },401)
@@ -1062,6 +1091,7 @@ Deno.serve(async (req) => {
     if (path === '/api/chat' && req.method === 'POST') return chat(req)
     if (path === '/api/research' && req.method === 'POST') return research(req)
     if (path === '/api/sessions' && req.method === 'GET') return listDeviceSessions()
+    if (path === '/api/security/recovery-key/rotate' && req.method === 'POST') return rotateRecoveryKey(req)
     if (path === '/api/uploads/sign' && req.method === 'POST') return signUpload(req)
     if (path === '/api/uploads/discard' && req.method === 'POST') return discardUpload(req)
     if (path === '/api/conversations' && req.method === 'GET') return listConversations()
