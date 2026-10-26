@@ -396,19 +396,26 @@ async function attachmentParts(attachments: any[]) {
 
 async function relevantContext(query: string, includeKnowledge: boolean, conversationId: string) {
   const vector = await embed(query)
-  const memoryPromise = db.rpc('private_ai_match_memories', { query_embedding: vector, match_count: 12, similarity_threshold: 0.24 })
-  const knowledgePromise = includeKnowledge && conversationId
-    ? db.rpc('private_ai_match_chunks_for_chat', {
+  const [settings, memories] = await Promise.all([
+    conversationId
+      ? db.from('private_ai_conversation_settings').select('use_global_knowledge').eq('conversation_id',conversationId).maybeSingle()
+      : Promise.resolve({data:null,error:null} as any),
+    db.rpc('private_ai_match_memories', { query_embedding: vector, match_count: 12, similarity_threshold: 0.24 })
+  ])
+  const includeGlobal=settings.error?false:settings.data?.use_global_knowledge===true
+  const knowledge=includeKnowledge&&conversationId
+    ? await db.rpc('private_ai_match_chunks_scoped', {
         query_embedding: vector,
         target_conversation_id: conversationId,
+        include_global: includeGlobal,
         match_count: 10,
         similarity_threshold: 0.25
       })
-    : Promise.resolve({ data: [], error: null } as any)
-  const [knowledge, memories] = await Promise.all([knowledgePromise, memoryPromise])
+    : ({data:[],error:null} as any)
   return {
     knowledge: knowledge.error ? [] : (knowledge.data || []),
     memories: memories.error ? [] : (memories.data || []),
+    use_global_knowledge: includeGlobal,
   }
 }
 
@@ -423,6 +430,8 @@ async function ensureConversation(id: string | null, firstMessage: string) {
   const title = titleFrom(firstMessage)
   const created = await db.from('private_ai_conversations').insert({ title }).select('id').single()
   if (created.error) throw created.error
+  const setting=await db.from('private_ai_conversation_settings').upsert({conversation_id:created.data.id,use_global_knowledge:false},{onConflict:'conversation_id'})
+  if(setting.error)throw setting.error
   const read = await db.from('private_ai_conversations_read')
     .select('id,title,rolling_summary,summary_through_message_count,total_message_count')
     .eq('id',created.data.id).single()
@@ -927,13 +936,16 @@ async function listConversations() {
 }
 
 async function getConversation(id: string) {
-  const [c, m] = await Promise.all([
+  const [conversation, messages, settings] = await Promise.all([
     db.from('private_ai_conversations_read').select('*').eq('id', id).maybeSingle(),
     db.from('private_ai_messages_read').select('id,role,content,model,sources,attachments,created_at').eq('conversation_id', id).order('created_at'),
+    db.from('private_ai_conversation_settings').select('use_global_knowledge').eq('conversation_id',id).maybeSingle(),
   ])
-  if (c.error) throw c.error
-  if (m.error) throw m.error
-  return json({ conversation: c.data, messages: m.data || [] })
+  if (conversation.error) throw conversation.error
+  if (messages.error) throw messages.error
+  if (settings.error) throw settings.error
+  const row=conversation.data?{...conversation.data,use_global_knowledge:settings.data?.use_global_knowledge===true}:null
+  return json({ conversation: row, messages: messages.data || [] })
 }
 
 async function updateConversation(id: string, req: Request) {
@@ -943,9 +955,19 @@ async function updateConversation(id: string, req: Request) {
   if (typeof body.pinned === 'boolean') patch.pinned = body.pinned
   const q = await db.from('private_ai_conversations').update(patch).eq('id', id).select('id').single()
   if (q.error) throw q.error
-  const read = await db.from('private_ai_conversations_read').select('*').eq('id',id).single()
+  if(typeof body.use_global_knowledge==='boolean'){
+    const setting=await db.from('private_ai_conversation_settings').upsert({
+      conversation_id:id,use_global_knowledge:body.use_global_knowledge,updated_at:new Date().toISOString()
+    },{onConflict:'conversation_id'})
+    if(setting.error)throw setting.error
+  }
+  const [read,settings]=await Promise.all([
+    db.from('private_ai_conversations_read').select('*').eq('id',id).single(),
+    db.from('private_ai_conversation_settings').select('use_global_knowledge').eq('conversation_id',id).maybeSingle()
+  ])
   if (read.error) throw read.error
-  return json({ ok: true, conversation: read.data })
+  if (settings.error) throw settings.error
+  return json({ ok: true, conversation: {...read.data,use_global_knowledge:settings.data?.use_global_knowledge===true} })
 }
 
 async function memoriesRoute(req: Request) {
@@ -976,17 +998,30 @@ async function knowledgeList(req: Request) {
     arr.push(String(m.conversation_id));bySource.set(sid,arr)
   }
   let rows=(sources.data||[]).map((s:any)=>({...s,conversation_ids:bySource.get(String(s.id))||[]}))
-  // No chat assignment means Global. This fallback keeps older rows/cached clients safe.
   const isGlobal=(s:any)=>s.global_enabled===true || !s.conversation_ids.length
+  const globalCount=rows.filter((s:any)=>isGlobal(s)).length
+  const chatCount=conversationId?rows.filter((s:any)=>s.conversation_ids.includes(conversationId)&&!isGlobal(s)).length:0
+  let useGlobal=false
+  if(conversationId){
+    const settings=await db.from('private_ai_conversation_settings').select('use_global_knowledge').eq('conversation_id',conversationId).maybeSingle()
+    if(settings.error)throw settings.error
+    useGlobal=settings.data?.use_global_knowledge===true
+  }
   if(scope==='chat'){
     rows=conversationId
-      ? rows.filter((s:any)=>isGlobal(s)||s.conversation_ids.includes(conversationId))
-      : rows.filter((s:any)=>isGlobal(s))
+      ? rows.filter((s:any)=>s.conversation_ids.includes(conversationId)&&!isGlobal(s))
+      : []
   }else if(scope==='global'||scope==='unassigned'){
-    // "unassigned" is a backwards-compatible alias for Global; there is no dead storage scope anymore.
     rows=rows.filter((s:any)=>isGlobal(s))
   }
-  return json({sources:rows,scope:scope==='unassigned'?'global':scope,conversation_id:conversationId||null})
+  return json({
+    sources:rows,
+    scope:scope==='unassigned'?'global':scope,
+    conversation_id:conversationId||null,
+    chat_count:chatCount,
+    global_count:globalCount,
+    use_global_knowledge:useGlobal
+  })
 }
 
 async function attachKnowledgeSource(conversationId:string,sourceId:string){
