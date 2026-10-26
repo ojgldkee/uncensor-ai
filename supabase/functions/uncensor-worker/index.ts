@@ -420,9 +420,9 @@ Deno.serve(async (req) => {
   const token = req.headers.get('x-worker-token') || ''
   if (!token) return json({ error: 'Worker token required' }, 401)
 
-  const cfg = await db.from('private_ai_runtime_config').select('worker_token').eq('id', true).maybeSingle()
-  if (cfg.error) return json({ error: cfg.error.message }, 500)
-  if (!cfg.data?.worker_token || token !== cfg.data.worker_token) return json({ error: 'Unauthorized' }, 401)
+  const valid = await db.rpc('private_ai_validate_worker_token', { candidate: token })
+  if (valid.error) return json({ error: valid.error.message }, 500)
+  if (valid.data !== true) return json({ error: 'Unauthorized' }, 401)
 
   const started = new Date().toISOString()
   await db.from('private_ai_runtime_config').update({
