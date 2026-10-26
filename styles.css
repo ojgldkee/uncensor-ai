@@ -64,3 +64,13 @@
 .media-upload-preview small,.media-upload-preview span{color:#76869c;font-size:9px;line-height:1.4}
 .knowledge-upload-state.processing,.knowledge-upload-state.uploading,.knowledge-upload-state.transcribing,.knowledge-upload-state.analyzing{color:#83cfff}
 @media(max-width:780px){.knowledge-media-card{grid-column:1/-1}}
+
+.device-link-card{border:1px solid #283244;background:#0b1018;border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:9px}
+.device-link-card>div:first-child{display:flex;flex-direction:column;gap:3px}
+.device-link-card strong{font-size:10px;color:#edf4ff}
+.device-link-card small{font-size:8px;color:#76869c;line-height:1.4}
+.pairing-code-box{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid #31415a;background:#0e1724;border-radius:10px;padding:9px}
+.pairing-code-box code{font-size:16px;letter-spacing:.14em;color:#dff3ff;font-weight:800}
+.pairing-entry{display:grid;grid-template-columns:1fr auto;gap:8px}
+.pairing-entry input{min-width:0;background:#090d14;border:1px solid #293242;color:#edf4ff;border-radius:10px;padding:9px 10px;text-transform:uppercase;letter-spacing:.08em}
+@media(max-width:650px){.pairing-entry{grid-template-columns:1fr}.pairing-code-box{align-items:flex-start;flex-direction:column}}
