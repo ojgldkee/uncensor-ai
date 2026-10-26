@@ -74,3 +74,10 @@
 .pairing-entry{display:grid;grid-template-columns:1fr auto;gap:8px}
 .pairing-entry input{min-width:0;background:#090d14;border:1px solid #293242;color:#edf4ff;border-radius:10px;padding:9px 10px;text-transform:uppercase;letter-spacing:.08em}
 @media(max-width:650px){.pairing-entry{grid-template-columns:1fr}.pairing-code-box{align-items:flex-start;flex-direction:column}}
+
+.data-safety-card{border:1px solid #283244;background:#0b1018;border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:8px}
+.data-safety-card>div{display:flex;flex-direction:column;gap:3px}
+.data-safety-card strong{font-size:10px;color:#edf4ff}
+.data-safety-card small{font-size:8px;color:#7f8ea4;line-height:1.45}
+.knowledge-tab{white-space:nowrap}
+.attach-chat{font-weight:800}
