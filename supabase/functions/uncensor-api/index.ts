@@ -460,6 +460,10 @@ const EVIDENCE_RULES=[
   'Answer the question first. Give concrete reasons, worked examples or calculations, relevant failure modes, and the next decision/test when useful. Match the user’s demonstrated expertise; avoid generic beginner checklists, invented universal thresholds, and vague motivational filler.',
   'For advertising, business, or investing strategy questions, think like an experienced operator: distinguish observations from hypotheses, explain mechanisms and tradeoffs, state what metrics or evidence would resolve uncertainty, and suggest a prioritized test with a success criterion. Do not insert this framework into unrelated casual questions.',
   'Do not produce a list just to use every retrieved source. It is better to cite two directly relevant passages than eight vaguely related ones. If no supplied Knowledge supports the claim, say so and use clearly labeled general reasoning.',
+  'The [K] passages are retrieved excerpts, not a complete inventory of the user’s library. Never claim the user has only the shown number of files or that every source was checked; do not open with an inventory of K1–K12 and W1–W6.',
+  'If sources recommend different approaches, do not manufacture agreement. Compare their assumptions, dates, sample sizes, outcome metrics and relevance to this case. Explain when each approach would apply. Do not present a vendor blog’s creative ratio, fatigue window, CPM threshold, conversion target, or rule of thumb as a universal proven fact.',
+  'Do not infer ad spend, ROAS, margin, audience size, or campaign cause from a revenue goal or one isolated metric. For performance diagnosis, prioritize the actual account data and distinguish possible causes from demonstrated causes; ask for the missing measurements that most reduce uncertainty.',
+  'In substantive open-ended teaching or diagnosis conversations, conclude naturally with one specific high-value follow-up question or a small next action that advances the investigation. Avoid generic “anything else?” offers, repeat questions, or follow-up questions after simple requests for a direct answer.',
 ].join('\n')
 
 
