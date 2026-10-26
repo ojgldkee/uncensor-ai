@@ -18,11 +18,14 @@ expect(missing.length===0,'app.js references missing HTML IDs: '+missing.join(',
 
 expect(/knowledgeFile[^>]+accept=["'][^"']*\.pdf/i.test(html),'Knowledge file picker must accept PDF files');
 expect(app.includes("application/pdf")&&app.includes("extractKnowledgePdf"),'PDF Knowledge extraction support is missing');
-expect(html.includes('app.js?v=29'),'Frontend cache version must be v29');
+expect(html.includes('app.js?v=30'),'Frontend cache version must be v30');
 expect(html.includes('styles.css?v=29'),'Styles cache version must be v29');
 expect(app.includes("/api/diagnostics")&&html.includes('id="runDiagnostics"'),'Diagnostics UI/endpoint wiring is missing');
 expect(api.includes("if (path === '/api/diagnostics'"),'Diagnostics backend route is missing');
 expect(api.includes('private_ai_match_chunks_scoped'),'Scoped Knowledge retrieval RPC is missing');
+expect(api.includes("const retrievalQuery=text || attachmentHint"),'Attachment-only retrieval fallback is missing');
+expect(api.includes("TRANSCRIBE_MODEL"),'Current audio transcription model wiring is missing');
+expect(app.includes("kind==='audio'?16*1024*1024"),'Direct-chat audio memory guard is missing');
 expect(api.includes("cleanup=await db.from('private_ai_knowledge_sources').delete()"),'Knowledge creation cleanup guard is missing');
 
 for(const [name,text] of [['app.js',app],['index.html',html],['config.js',config]]){
