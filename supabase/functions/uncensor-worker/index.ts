@@ -480,7 +480,7 @@ Deno.serve(async (req) => {
   await db.from('private_ai_runtime_config').update({
     last_worker_success_at: workerError ? undefined : now,
     last_worker_error: workerError ? workerError.slice(0,2000) : null,
-    backend_version: 'v4',
+    backend_version: 'v5-private',
     updated_at: now,
   }).eq('id', true)
 
