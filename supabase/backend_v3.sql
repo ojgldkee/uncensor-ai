@@ -1281,3 +1281,164 @@ as $$
 $$;
 revoke all on function public.private_ai_vector_transform_key() from public,anon,authenticated;
 grant execute on function public.private_ai_vector_transform_key() to service_role;
+
+
+-- v6 automated security health
+create table if not exists public.private_ai_health_status (
+  id boolean primary key default true check (id),
+  checked_at timestamptz not null default now(),
+  status text not null default 'unknown',
+  details jsonb not null default '{}'::jsonb
+);
+insert into public.private_ai_health_status(id) values(true) on conflict(id) do nothing;
+alter table public.private_ai_health_status enable row level security;
+revoke all on table public.private_ai_health_status from anon,authenticated;
+grant select,insert,update,delete on table public.private_ai_health_status to service_role;
+
+create table if not exists public.private_ai_enrollment_buckets (
+  bucket_start timestamptz primary key,
+  request_count integer not null default 0,
+  updated_at timestamptz not null default now()
+);
+alter table public.private_ai_enrollment_buckets enable row level security;
+revoke all on table public.private_ai_enrollment_buckets from anon,authenticated;
+grant select,insert,update,delete on table public.private_ai_enrollment_buckets to service_role;
+
+create or replace function public.private_ai_take_enrollment_limit(minute_limit integer default 6)
+returns boolean language plpgsql security definer set search_path=''
+as $$
+declare b timestamptz:=date_trunc('minute',now()); n integer;
+begin
+  insert into public.private_ai_enrollment_buckets(bucket_start,request_count,updated_at)
+  values(b,1,now())
+  on conflict(bucket_start) do update
+  set request_count=public.private_ai_enrollment_buckets.request_count+1,updated_at=now()
+  returning request_count into n;
+  delete from public.private_ai_enrollment_buckets where bucket_start<now()-interval '2 days';
+  return n<=greatest(1,minute_limit);
+end;
+$$;
+revoke all on function public.private_ai_take_enrollment_limit(integer) from public,anon,authenticated;
+grant execute on function public.private_ai_take_enrollment_limit(integer) to service_role;
+
+create or replace function public.private_ai_match_chunks(
+  query_embedding extensions.vector, match_count integer default 10,
+  similarity_threshold double precision default 0.25
+)
+returns table(id bigint,source_id uuid,title text,content text,chunk_index integer,similarity double precision)
+language sql stable security definer set search_path=''
+as $$
+  select c.id,c.source_id,public.private_ai_decrypt_text(s.title),
+         public.private_ai_decrypt_text(c.content),c.chunk_index,
+         1-(c.embedding OPERATOR(extensions.<=>) query_embedding)
+  from public.private_ai_knowledge_chunks c
+  join public.private_ai_knowledge_sources s on s.id=c.source_id
+  where s.status='ready' and s.enabled=true and c.embedding is not null
+    and 1-(c.embedding OPERATOR(extensions.<=>) query_embedding)>=similarity_threshold
+  order by c.embedding OPERATOR(extensions.<=>) query_embedding
+  limit greatest(1,least(match_count,30));
+$$;
+revoke all on function public.private_ai_match_chunks(extensions.vector,integer,double precision) from public,anon,authenticated;
+grant execute on function public.private_ai_match_chunks(extensions.vector,integer,double precision) to service_role;
+
+create or replace function public.private_ai_security_maintenance()
+returns jsonb language plpgsql security definer set search_path=''
+as $$
+declare
+  anon_grants integer:=0; storage_policies integer:=0; public_buckets integer:=0;
+  plaintext_messages integer:=0; plaintext_memories integer:=0; plaintext_summaries integer:=0;
+  plaintext_titles integer:=0; plaintext_chunks integer:=0; plaintext_source_titles integer:=0;
+  plaintext_metadata integer:=0; plaintext_source_json integer:=0; plaintext_attachment_json integer:=0;
+  unembedded integer:=0; queue_jobs integer:=0; source_errors integer:=0; active_sessions integer:=0;
+  vault_keys integer:=0; worker_stale boolean:=false; worker_error text:=null; last_success timestamptz;
+  health text; payload jsonb;
+begin
+  update public.private_ai_messages set content=public.private_ai_encrypt_text(content)
+   where content is not null and content not like 'enc:v1:%';
+  update public.private_ai_messages
+     set sources=public.private_ai_encrypt_json(public.private_ai_decrypt_json(sources)),
+         attachments=public.private_ai_encrypt_json(public.private_ai_decrypt_json(attachments))
+   where not (coalesce(sources,'{}'::jsonb)?'_enc_v1')
+      or not (coalesce(attachments,'{}'::jsonb)?'_enc_v1');
+  update public.private_ai_memories set content=public.private_ai_encrypt_text(content)
+   where content is not null and content not like 'enc:v1:%';
+  update public.private_ai_conversations set title=public.private_ai_encrypt_text(title)
+   where title is not null and title not like 'enc:v1:%';
+  update public.private_ai_conversations set rolling_summary=public.private_ai_encrypt_text(rolling_summary)
+   where rolling_summary is not null and rolling_summary<>'' and rolling_summary not like 'enc:v1:%';
+  update public.private_ai_knowledge_chunks set content=public.private_ai_encrypt_text(content)
+   where content is not null and content not like 'enc:v1:%';
+  update public.private_ai_knowledge_sources set title=public.private_ai_encrypt_text(title)
+   where title is not null and title not like 'enc:v1:%';
+  update public.private_ai_knowledge_sources
+     set metadata=public.private_ai_encrypt_json(public.private_ai_decrypt_json(metadata))
+   where not (coalesce(metadata,'{}'::jsonb)?'_enc_v1');
+
+  update storage.buckets set public=false,updated_at=now()
+   where id='private-ai-attachments' and public=true;
+  update public.private_ai_knowledge_chunks set embedding_claimed_at=null
+   where embedding is null and embedding_claimed_at<now()-interval '10 minutes';
+  delete from public.private_ai_device_sessions
+   where (revoked_at is not null and revoked_at<now()-interval '7 days')
+      or expires_at<now()-interval '7 days';
+
+  select count(*) into anon_grants from information_schema.role_table_grants
+   where table_schema='public' and table_name like 'private_ai_%' and grantee in ('anon','authenticated');
+  select count(*) into storage_policies from pg_catalog.pg_policies
+   where schemaname='storage' and tablename='objects';
+  select count(*) into public_buckets from storage.buckets
+   where id='private-ai-attachments' and public=true;
+  select count(*) into plaintext_messages from public.private_ai_messages where content is not null and content not like 'enc:v1:%';
+  select count(*) into plaintext_memories from public.private_ai_memories where content is not null and content not like 'enc:v1:%';
+  select count(*) into plaintext_summaries from public.private_ai_conversations where rolling_summary<>'' and rolling_summary not like 'enc:v1:%';
+  select count(*) into plaintext_titles from public.private_ai_conversations where title is not null and title not like 'enc:v1:%';
+  select count(*) into plaintext_chunks from public.private_ai_knowledge_chunks where content is not null and content not like 'enc:v1:%';
+  select count(*) into plaintext_source_titles from public.private_ai_knowledge_sources where title is not null and title not like 'enc:v1:%';
+  select count(*) into plaintext_metadata from public.private_ai_knowledge_sources where not (coalesce(metadata,'{}'::jsonb)?'_enc_v1');
+  select count(*) into plaintext_source_json from public.private_ai_messages where not (coalesce(sources,'{}'::jsonb)?'_enc_v1');
+  select count(*) into plaintext_attachment_json from public.private_ai_messages where not (coalesce(attachments,'{}'::jsonb)?'_enc_v1');
+  select count(*) into unembedded from public.private_ai_knowledge_chunks where embedding is null;
+  select count(*) into queue_jobs from pgmq.q_uncensor_jobs;
+  select count(*) into source_errors from public.private_ai_knowledge_sources where status='failed' or last_error is not null;
+  select count(*) into active_sessions from public.private_ai_device_sessions where revoked_at is null and expires_at>now();
+  select count(*) into vault_keys from vault.decrypted_secrets where name='private_ai_data_key';
+  select last_worker_success_at,last_worker_error into last_success,worker_error from public.private_ai_runtime_config where id=true;
+  worker_stale:=last_success is null or last_success<now()-interval '90 seconds';
+
+  if worker_stale and (queue_jobs>0 or unembedded>0) then perform public.private_ai_dispatch_worker(); end if;
+
+  health:=case when anon_grants=0 and storage_policies=0 and public_buckets=0
+    and plaintext_messages=0 and plaintext_memories=0 and plaintext_summaries=0
+    and plaintext_titles=0 and plaintext_chunks=0 and plaintext_source_titles=0
+    and plaintext_metadata=0 and plaintext_source_json=0 and plaintext_attachment_json=0
+    and source_errors=0 and vault_keys=1 and worker_error is null
+    and (not worker_stale or (queue_jobs=0 and unembedded=0))
+    then 'healthy' else 'attention' end;
+
+  payload:=pg_catalog.jsonb_build_object(
+    'status',health,'checked_at',now(),'unexpected_client_grants',anon_grants,
+    'storage_policies',storage_policies,'public_attachment_buckets',public_buckets,
+    'plaintext_rows',plaintext_messages+plaintext_memories+plaintext_summaries+plaintext_titles+
+      plaintext_chunks+plaintext_source_titles+plaintext_metadata+plaintext_source_json+plaintext_attachment_json,
+    'vault_data_key_count',vault_keys,'unembedded_chunks',unembedded,'queue_jobs',queue_jobs,
+    'failed_sources',source_errors,'active_device_sessions',active_sessions,'worker_stale',worker_stale,
+    'worker_error',worker_error
+  );
+
+  insert into public.private_ai_health_status(id,checked_at,status,details)
+  values(true,now(),health,payload)
+  on conflict(id) do update set checked_at=excluded.checked_at,status=excluded.status,details=excluded.details;
+
+  update public.private_ai_runtime_config set backend_version='v6-private',updated_at=now() where id=true;
+  return payload;
+end;
+$$;
+revoke all on function public.private_ai_security_maintenance() from public,anon,authenticated;
+grant execute on function public.private_ai_security_maintenance() to service_role;
+
+select cron.unschedule(jobid) from cron.job where jobname='uncensor-ai-security-maintenance';
+select cron.schedule(
+  'uncensor-ai-security-maintenance',
+  '*/5 * * * *',
+  $$ select public.private_ai_security_maintenance(); $$
+);
