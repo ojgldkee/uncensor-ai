@@ -978,3 +978,155 @@ revoke all on function public.private_ai_encrypt_message_content() from public,a
 revoke all on function public.private_ai_encrypt_memory_content() from public,anon,authenticated;
 revoke all on function public.private_ai_encrypt_conversation_summary() from public,anon,authenticated;
 revoke all on function public.private_ai_encrypt_chunk_content() from public,anon,authenticated;
+
+
+-- v5.1 private metadata hardening
+alter table public.private_ai_knowledge_sources
+  add column if not exists title_hash text,
+  add column if not exists file_size_bytes bigint;
+
+update public.private_ai_knowledge_sources
+set title_hash=coalesce(title_hash,pg_catalog.encode(extensions.digest(public.private_ai_decrypt_text(title),'sha256'),'hex')),
+    file_size_bytes=coalesce(
+      file_size_bytes,
+      case
+        when (public.private_ai_decrypt_json(metadata)->>'file_size') ~ '^[0-9]+$'
+          then (public.private_ai_decrypt_json(metadata)->>'file_size')::bigint
+        else null
+      end
+    );
+
+create index if not exists private_ai_knowledge_title_size_idx
+on public.private_ai_knowledge_sources(title_hash,file_size_bytes);
+
+create or replace function public.private_ai_encrypt_json(value jsonb)
+returns jsonb language plpgsql security definer set search_path=''
+as $$
+begin
+  if value is null then return null; end if;
+  if value ? '_enc_v1' then return value; end if;
+  return pg_catalog.jsonb_build_object('_enc_v1',public.private_ai_encrypt_text(value::text));
+end;
+$$;
+
+create or replace function public.private_ai_decrypt_json(value jsonb)
+returns jsonb language plpgsql stable security definer set search_path=''
+as $$
+declare raw text;
+begin
+  if value is null then return null; end if;
+  if not (value ? '_enc_v1') then return value; end if;
+  raw:=public.private_ai_decrypt_text(value->>'_enc_v1');
+  return raw::jsonb;
+exception when others then
+  return '{}'::jsonb;
+end;
+$$;
+
+revoke all on function public.private_ai_encrypt_json(jsonb) from public,anon,authenticated;
+revoke all on function public.private_ai_decrypt_json(jsonb) from public,anon,authenticated;
+grant execute on function public.private_ai_encrypt_json(jsonb) to service_role;
+grant execute on function public.private_ai_decrypt_json(jsonb) to service_role;
+
+create or replace function public.private_ai_encrypt_message_content()
+returns trigger language plpgsql security definer set search_path=''
+as $$
+begin
+  new.content:=public.private_ai_encrypt_text(new.content);
+  new.sources:=public.private_ai_encrypt_json(coalesce(new.sources,'[]'::jsonb));
+  new.attachments:=public.private_ai_encrypt_json(coalesce(new.attachments,'[]'::jsonb));
+  return new;
+end;
+$$;
+
+create or replace function public.private_ai_encrypt_conversation_summary()
+returns trigger language plpgsql security definer set search_path=''
+as $$
+begin
+  if new.title is not null then new.title:=public.private_ai_encrypt_text(new.title); end if;
+  if new.rolling_summary is not null then new.rolling_summary:=public.private_ai_encrypt_text(new.rolling_summary); end if;
+  return new;
+end;
+$$;
+
+create or replace function public.private_ai_encrypt_knowledge_source()
+returns trigger language plpgsql security definer set search_path=''
+as $$
+begin
+  if new.title is not null and new.title not like 'enc:v1:%' then
+    new.title_hash:=pg_catalog.encode(extensions.digest(new.title,'sha256'),'hex');
+    new.title:=public.private_ai_encrypt_text(new.title);
+  end if;
+  if new.metadata is not null and not (new.metadata ? '_enc_v1') then
+    if new.metadata ? 'file_size' and (new.metadata->>'file_size') ~ '^[0-9]+$' then
+      new.file_size_bytes:=(new.metadata->>'file_size')::bigint;
+    end if;
+    new.metadata:=public.private_ai_encrypt_json(new.metadata);
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists private_ai_encrypt_message_content_trigger on public.private_ai_messages;
+create trigger private_ai_encrypt_message_content_trigger
+before insert or update of content,sources,attachments on public.private_ai_messages
+for each row execute function public.private_ai_encrypt_message_content();
+
+drop trigger if exists private_ai_encrypt_conversation_summary_trigger on public.private_ai_conversations;
+create trigger private_ai_encrypt_conversation_summary_trigger
+before insert or update of title,rolling_summary on public.private_ai_conversations
+for each row execute function public.private_ai_encrypt_conversation_summary();
+
+drop trigger if exists private_ai_encrypt_knowledge_source_trigger on public.private_ai_knowledge_sources;
+create trigger private_ai_encrypt_knowledge_source_trigger
+before insert or update of title,metadata on public.private_ai_knowledge_sources
+for each row execute function public.private_ai_encrypt_knowledge_source();
+
+update public.private_ai_messages
+set sources=public.private_ai_encrypt_json(public.private_ai_decrypt_json(sources)),
+    attachments=public.private_ai_encrypt_json(public.private_ai_decrypt_json(attachments));
+
+update public.private_ai_conversations
+set title=public.private_ai_encrypt_text(public.private_ai_decrypt_text(title));
+
+update public.private_ai_knowledge_sources
+set title=public.private_ai_encrypt_text(public.private_ai_decrypt_text(title)),
+    metadata=public.private_ai_encrypt_json(public.private_ai_decrypt_json(metadata));
+
+create or replace view public.private_ai_messages_read with (security_invoker=false) as
+select id,conversation_id,role,public.private_ai_decrypt_text(content) as content,
+       model,public.private_ai_decrypt_json(sources) as sources,
+       public.private_ai_decrypt_json(attachments) as attachments,created_at
+from public.private_ai_messages;
+
+create or replace view public.private_ai_conversations_read with (security_invoker=false) as
+select id,public.private_ai_decrypt_text(title) as title,pinned,
+       public.private_ai_decrypt_text(rolling_summary) as rolling_summary,
+       summary_through_message_count,summary_version,summary_updated_at,
+       total_message_count,created_at,updated_at
+from public.private_ai_conversations;
+
+create or replace view public.private_ai_knowledge_sources_read with (security_invoker=false) as
+select id,public.private_ai_decrypt_text(title) as title,source_type,enabled,
+       content_hash,file_sha256,title_hash,file_size_bytes,char_count,chunk_count,
+       embedded_chunk_count,status,failure_count,last_error,
+       public.private_ai_decrypt_json(metadata) as metadata,
+       created_at,updated_at,completed_at
+from public.private_ai_knowledge_sources;
+
+revoke all on public.private_ai_messages_read from public,anon,authenticated;
+revoke all on public.private_ai_conversations_read from public,anon,authenticated;
+revoke all on public.private_ai_knowledge_sources_read from public,anon,authenticated;
+grant select on public.private_ai_messages_read to service_role;
+grant select on public.private_ai_conversations_read to service_role;
+grant select on public.private_ai_knowledge_sources_read to service_role;
+
+revoke all on function public.private_ai_encrypt_message_content() from public,anon,authenticated;
+revoke all on function public.private_ai_encrypt_conversation_summary() from public,anon,authenticated;
+revoke all on function public.private_ai_encrypt_knowledge_source() from public,anon,authenticated;
+
+-- Memory keys are stable identifiers, not user-facing labels. Hash them to avoid
+-- leaking memory semantics in a raw database dump.
+update public.private_ai_memories
+set memory_key=pg_catalog.encode(extensions.digest(memory_key,'sha256'),'hex')
+where memory_key !~ '^[a-f0-9]{64}$';
