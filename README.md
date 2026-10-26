@@ -1,90 +1,72 @@
 # Uncensor AI
 
-A private, single-user, mobile-first AI chat workspace built around open-weight models, persistent chats, and a personal semantic knowledge library.
+A private, single-user, mobile-first AI workspace with persistent chats, long-term memory, a global Knowledge library, current-web research, and multiple OpenRouter models.
 
-## What v2 already supports
+## Current capabilities
 
-- Streaming chat on iPhone and desktop
-- Up to 500 conversations loaded in the sidebar
-- Search chats by title
-- Pin/unpin chats
-- Rename chats
-- **Permanent chat deletion** with database-level cascade deletion of every message in that chat
-- Export the current chat to Markdown
-- Stop a generation while it is streaming
-- Persistent conversation history in Supabase
-- Long-chat context recovery from the database (up to 80 recent messages / a configurable context budget)
-- OpenRouter model selector
-- DeepSeek V4.1 Flash 1017 as the balanced default
-- Kimi K3.1 Pro as a higher-cost "Best" option
-- GLM 5.3 Flash and Qwen3.8 27B alternatives
-- Direct / Teacher / Precise / Deep-analysis response modes
-- Custom personal instructions
-- Personal knowledge ingestion from pasted text and multiple text-based files
-- Up to ~5,000,000 characters per knowledge source
-- Resumable batched embedding/indexing
-- Semantic retrieval using Supabase `gte-small` + pgvector
-- Enable/disable individual knowledge sources without deleting them
-- Rename or permanently delete knowledge sources
-- Retrieval source chips on answers
-- OpenRouter is hard-disabled by default
-- Rolling 24-hour application spend cap
-- PWA metadata for iPhone Home Screen use
+- Persistent chats with rename, pin, export, search, and permanent deletion
+- Mobile-safe iPhone chat transport plus desktop streaming
+- Rolling long-chat summaries
+- Cross-chat long-term memory
+- Global Knowledge library with background indexing
+- Large HTML/text ingestion with saved-page cleanup
+- Exact duplicate-file blocking with SHA-256
+- Batched OpenRouter embeddings + pgvector retrieval
+- Multiple models including DeepSeek, Venice Uncensored, GLM, Kimi, and multimodal routing
+- Current-web research using OpenRouter web search/fetch
+- Multiple-source comparison and clickable citations
+- Save researched web sources into Knowledge
+- Privacy firewall that sanitizes public search queries before external search
+- Revocable 30-day device sessions
+- Private attachment storage
+- Server-side spend limits and request throttling
+- Background worker health tracking and automatic retries
 
-## Privacy / access model
+## Privacy model
 
-The frontend never receives the Supabase service-role key or OpenRouter API key. All privileged calls are performed server-side. The intended deployment is behind Cloudflare Access so only your account can open the site.
+The GitHub Pages frontend contains no Supabase service-role key, OpenRouter key, Vault data key, or private database content.
 
-**Important:** the GitHub repository itself should be private. A public repo is still safe only if no secrets are committed, but private is the correct setting for this personal project.
+Private database tables are not granted to anonymous/authenticated client roles. Attachments live in a non-public Supabase Storage bucket.
 
-## Behavior
+The master enrollment key is used only to enroll a device. The browser then receives a revocable device session token; only its hash is stored in the database.
 
-The default assistant prompt is intentionally direct and low-friction: it asks the model not to refuse merely because a topic is controversial, sensitive, adult, unconventional, or uncomfortable, and to give the closest useful answer rather than canned boilerplate.
+High-value stored content is application-encrypted before it rests in the database:
 
-The actual behavior still depends on the selected model and the inference provider. No hosted setup can truthfully guarantee that every model will answer literally every possible request.
+- chat message bodies
+- long-term memory content
+- rolling conversation summaries
+- Knowledge chunk text
 
-## Architecture
+The random encryption key is generated inside Supabase and stored in Supabase Vault. Server-only functions/views decrypt content when the AI needs to process it.
 
-```text
-iPhone / browser
-    ↓
-Cloudflare Worker + static assets
-    ├─→ OpenRouter (chat completions only)
-    └─→ Supabase
-         ├─ conversations + messages
-         ├─ usage ledger
-         ├─ knowledge sources + chunks
-         └─ local gte-small embeddings + pgvector retrieval
-```
+Private model requests require OpenRouter Zero Data Retention routing and data_collection: deny. Web research is intentionally separated: the external search stage receives a privacy-firewalled public query, not private Memory or Knowledge. Private context is merged later during synthesis.
 
-## Setup
+This is intentionally stronger than relying only on database disk encryption, but it is not client-only end-to-end encryption. The trusted server must be able to decrypt selected content for background memory, indexing, retrieval, and summarization.
 
-1. Make the GitHub repo private.
-2. Create a dedicated Supabase project.
-3. Run `supabase/schema.sql` in the Supabase SQL editor.
-4. Deploy `supabase/functions/private-ai-knowledge/index.ts` as the `private-ai-knowledge` Edge Function.
-5. Add a long random `PRIVATE_AI_INTERNAL_TOKEN` to the Edge Function secrets.
-6. Deploy the repository as a Cloudflare Worker with static assets.
-7. Add the server-side secrets `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `PRIVATE_AI_INTERNAL_TOKEN`.
-8. Leave `OPENROUTER_ENABLED=false` until the dedicated OpenRouter key is added.
-9. Add `OPENROUTER_API_KEY`, then intentionally set `OPENROUTER_ENABLED=true`.
-10. Put the site behind Cloudflare Access and allow only your account.
+## Web Research
 
-## Spend protection
+Turn Web on in chat.
 
-Two independent controls prevent surprise usage:
+Research flow:
 
-- `OPENROUTER_ENABLED=false` means chat calls cannot reach OpenRouter at all.
-- `DAILY_SPEND_LIMIT_USD=1.00` blocks new requests after the rolling 24-hour app ledger reaches the configured cap.
+private question → privacy firewall/redaction → sanitized public query → OpenRouter web search/fetch → multiple public sources → private Knowledge + relevant Memory → private synthesis model → cited answer
 
-Knowledge ingestion uses Supabase embeddings rather than OpenRouter, so importing notes does not consume OpenRouter chat credits.
+No Gemini API key is required. The existing OpenRouter key powers both model inference and current-web research.
 
-## Knowledge ingestion
+## Knowledge
 
-Text is split into overlapping chunks, stored first, then embedded in resumable batches. This is deliberately designed for long transcripts and course material so one timeout does not discard the whole import.
+Knowledge is global, not tied to a chat. Current direct ingestion supports websites and browser-readable text/HTML/code files. HTML saved-page exports are cleaned before indexing so embedded images, scripts, CSS, and base64 payloads do not pollute retrieval.
 
-Current direct file support is text-based: TXT, Markdown, CSV, JSON, HTML, logs, code, SQL, CSS, and other browser-readable text files. PDF/DOCX extraction is the next ingestion upgrade rather than pretending binary documents are plain text.
+Exact duplicate files are blocked by SHA-256 even if renamed.
+
+## Cost protection
+
+The backend enforces a rolling spend ceiling and request-rate limits. Embedding, chat, memory, summary, and research usage are recorded separately so costs can be audited.
+
+## Reliability
+
+The background worker uses leased batched indexing instead of one queue job per chunk. Cron runs every 10 seconds, worker health is recorded, jobs are retried, and the client can restore server-saved responses after network interruption.
 
 ## Product roadmap
 
-See [ROADMAP.md](./ROADMAP.md) for the 14-step reliability and capability roadmap. AI-generated courses are intentionally not part of the plan.
+See ROADMAP.md. AI-generated courses are intentionally excluded.
