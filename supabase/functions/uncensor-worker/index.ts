@@ -21,6 +21,36 @@ type QueueJob = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 
+let vectorTransformPromise: Promise<{perm:number[],signs:number[]}> | null = null
+async function vectorTransformSpec() {
+  if (!vectorTransformPromise) vectorTransformPromise = (async()=>{
+    const q=await db.rpc('private_ai_vector_transform_key')
+    if(q.error)throw q.error
+    const key=String(q.data||'')
+    if(key.length<32)throw new Error('Vector transform key is unavailable')
+    const bytes:number[]=[]
+    for(let counter=0;bytes.length<4096;counter++){
+      const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(key+':'+counter))
+      bytes.push(...new Uint8Array(digest))
+    }
+    let pos=0
+    const nextU32=()=>{
+      const v=(((bytes[pos]<<24)>>>0)|(bytes[pos+1]<<16)|(bytes[pos+2]<<8)|bytes[pos+3])>>>0
+      pos+=4
+      return v
+    }
+    const perm=Array.from({length:EMBED_DIMENSIONS},(_,i)=>i)
+    for(let i=perm.length-1;i>0;i--){const j=nextU32()%(i+1);[perm[i],perm[j]]=[perm[j],perm[i]]}
+    const signs=Array.from({length:EMBED_DIMENSIONS},()=>((nextU32()&1)===1?1:-1))
+    return {perm,signs}
+  })()
+  return vectorTransformPromise
+}
+async function transformVector(vector:number[]) {
+  const spec=await vectorTransformSpec()
+  return spec.perm.map((sourceIndex,i)=>Number(vector[sourceIndex]||0)*spec.signs[i])
+}
+
 async function embeddingBatch(texts: string[]) {
   if (!OPENROUTER_KEY) throw new Error('OPENROUTER_API_KEY is not configured for embeddings')
   if (!texts.length) return []
@@ -61,7 +91,8 @@ async function embeddingBatch(texts: string[]) {
       })
     } catch {}
   }
-  return vectors
+  const spec=await vectorTransformSpec()
+  return vectors.map((vector:any)=>spec.perm.map((sourceIndex,i)=>Number(vector[sourceIndex]||0)*spec.signs[i]))
 }
 
 async function embedding(text: string) {
