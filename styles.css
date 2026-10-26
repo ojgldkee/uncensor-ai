@@ -108,3 +108,28 @@
 .user-message-actions{justify-content:flex-end;align-self:flex-end;margin-top:5px}
 .user-message-actions button{opacity:.78}
 @media(max-width:780px){.message.user .user-message-content{max-width:90%}.knowledge-scope-chip{display:inline-flex}}
+
+/* v25 multi-file staging + bulk Knowledge management */
+.knowledge-bulk-bar{display:flex;align-items:center;gap:10px;margin:8px 0 10px;padding:9px 10px;border:1px solid #242e3e;background:#0b1018;border-radius:11px;min-height:44px}
+.knowledge-select-all{display:flex;align-items:center;gap:7px;color:#aeb9c9;font-size:10px;cursor:pointer}
+.knowledge-select-all input{accent-color:#67e3ff}
+#knowledgeBulkCount{font-size:10px;color:#7f8ca0;margin-right:auto}
+.knowledge-bulk-bar .secondary-btn{padding:7px 10px;min-height:30px}
+.knowledge-bulk-bar .text-btn{padding:6px 8px}
+.knowledge-row-select{display:flex;align-items:flex-start;justify-content:center;padding-top:4px;cursor:pointer}
+.knowledge-row-select input{width:15px;height:15px;accent-color:#67e3ff;cursor:pointer}
+.knowledge-library-item{grid-template-columns:auto minmax(0,1fr) auto}
+.knowledge-library-item.selected{border-color:rgba(103,227,255,.42);background:rgba(103,227,255,.035)}
+.multi-file-help{display:flex;flex-wrap:wrap;gap:5px}
+.multi-file-help span{font-size:8px;color:#7f96ae;border:1px solid #28364a;background:#101722;border-radius:999px;padding:4px 6px}
+.knowledge-upload-row.staged{border-color:rgba(103,227,255,.24);background:rgba(103,227,255,.025)}
+.knowledge-upload-row-actions{display:flex;align-items:center;gap:7px}
+.remove-staged{width:24px;height:24px;border:0;border-radius:7px;background:#161c27;color:#9da9ba;font-size:16px;line-height:1}
+.remove-staged:hover{background:#252d3a;color:white}
+@media(max-width:780px){
+  .knowledge-bulk-bar{flex-wrap:wrap}
+  #knowledgeBulkCount{margin-right:0;flex:1}
+  .knowledge-bulk-bar .secondary-btn{flex:1}
+  .knowledge-library-item{grid-template-columns:auto minmax(0,1fr)}
+  .knowledge-library-item .knowledge-actions{grid-column:2}
+}
