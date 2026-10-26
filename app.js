@@ -1,6 +1,6 @@
 const $=id=>document.getElementById(id);
 const DEFAULT_STYLE='Be direct, specific, intellectually curious, and nonjudgmental. Do not avoid a topic merely because it is controversial, sensitive, adult, or unconventional. Correct false premises, distinguish facts from uncertainty, and give useful specifics. If the exact request cannot be fulfilled, give the closest useful answer instead of boilerplate.';
-const state={conversations:[],activeId:null,activeConversation:null,messages:[],knowledge:[],memories:[],pendingAttachments:[],knowledgeFileUploads:[],knowledgePollTimer:null,sending:false,abort:null,knowledgeEnabled:localStorage.getItem('uncensor.knowledge')!=='false',showSources:localStorage.getItem('uncensor.sources')!=='false',mode:localStorage.getItem('uncensor.mode')||'direct',style:localStorage.getItem('uncensor.style')||DEFAULT_STYLE};
+const state={conversations:[],activeId:null,activeConversation:null,messages:[],knowledge:[],memories:[],pendingAttachments:[],knowledgeFileUploads:[],knowledgePollTimer:null,webResearch:localStorage.getItem('uncensor.webResearch')==='true',googleSearchEnabled:false,sending:false,abort:null,knowledgeEnabled:localStorage.getItem('uncensor.knowledge')!=='false',showSources:localStorage.getItem('uncensor.sources')!=='false',mode:localStorage.getItem('uncensor.mode')||'direct',style:localStorage.getItem('uncensor.style')||DEFAULT_STYLE};
 
 function esc(v){return String(v||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
 function md(v){let s=esc(v);s=s.replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h1>$1</h1>');s=s.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>');return s.split(/\n{2,}/).map(p=>/^<h\d/.test(p)?p:'<p>'+p.replace(/\n/g,'<br>')+'</p>').join('');}
@@ -8,15 +8,38 @@ function toast(t,ms=2500){const e=$('toast');e.textContent=t;e.classList.remove(
 function configuredApiBase(){return String(localStorage.getItem('uncensor.apiBase')||((window.UNCENSOR_CONFIG||{}).apiBase)||'').replace(/\/$/,'');}
 function endpoint(path){const b=configuredApiBase();if(b)return b+path;const base=(location.pathname.includes('/uncensor-ai')?'/uncensor-ai':'');return base+path;}
 function accessKey(){return localStorage.getItem('uncensor.accessKey')||'';}
-function ensureAccessKey(){const key=accessKey();if(key)return key;syncSettings();openModal('settingsModal');toast('Enter your private access key once on this device.',3500);return'';}
-async function api(path,opt={},retry=true){const h=Object.assign({'Content-Type':'application/json'},opt.headers||{});const key=accessKey();if(key)h['x-uncensor-key']=key;const r=await fetch(endpoint(path),Object.assign({},opt,{headers:h}));const tx=await r.text();let d={};try{d=tx?JSON.parse(tx):{};}catch{d={error:tx||'Unexpected response'};}if(r.status===401&&d.requires_access_key&&retry){const k=ensureAccessKey();if(k)return api(path,opt,false);}if(!r.ok)throw Object.assign(new Error(d.error||('Request failed '+r.status)),{data:d,status:r.status});return d;}
+function sessionToken(){return localStorage.getItem('uncensor.sessionToken')||'';}
+function hasPrivateAuth(){return Boolean(sessionToken()||accessKey());}
+function authHeaders(extra={}){const h=Object.assign({'Content-Type':'application/json'},extra||{});const session=sessionToken(),key=accessKey();if(session)h['x-uncensor-session']=session;else if(key)h['x-uncensor-key']=key;return h;}
+function ensurePrivateAuth(){if(hasPrivateAuth())return true;syncSettings();openModal('settingsModal');toast('Enter your private access key to enroll this device.',3500);return false;}
+async function enrollDeviceSession(){
+  const key=accessKey();if(!key)return false;
+  const name=(navigator.platform||'Private device')+' · '+(navigator.userAgent.includes('iPhone')?'iPhone':navigator.userAgent.includes('iPad')?'iPad':'Browser');
+  const r=await fetch(endpoint('/api/session/enroll'),{method:'POST',headers:{'Content-Type':'application/json','x-uncensor-key':key},body:JSON.stringify({device_name:name})});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(d.error||'Could not enroll this device');
+  localStorage.setItem('uncensor.sessionToken',d.session_token);
+  localStorage.setItem('uncensor.sessionId',d.session_id||'');
+  localStorage.setItem('uncensor.sessionExpires',d.expires_at||'');
+  localStorage.removeItem('uncensor.accessKey');
+  if($('accessKeyInput'))$('accessKeyInput').value='';
+  syncSettings();
+  return true;
+}
+async function revokeCurrentDevice(){
+  const id=localStorage.getItem('uncensor.sessionId')||'';
+  try{if(id)await api('/api/sessions/'+encodeURIComponent(id),{method:'DELETE'});}catch{}
+  localStorage.removeItem('uncensor.sessionToken');localStorage.removeItem('uncensor.sessionId');localStorage.removeItem('uncensor.sessionExpires');
+  syncSettings();toast('This device session was revoked.');openModal('settingsModal');
+}
+async function api(path,opt={},retry=true){const h=Object.assign(authHeaders(),opt.headers||{});const r=await fetch(endpoint(path),Object.assign({},opt,{headers:h}));const tx=await r.text();let d={};try{d=tx?JSON.parse(tx):{};}catch{d={error:tx||'Unexpected response'};}if(r.status===401&&d.requires_access_key&&retry){if(sessionToken()){localStorage.removeItem('uncensor.sessionToken');localStorage.removeItem('uncensor.sessionId');localStorage.removeItem('uncensor.sessionExpires');}if(accessKey()){try{await enrollDeviceSession();return api(path,opt,false);}catch{}}ensurePrivateAuth();}if(!r.ok)throw Object.assign(new Error(d.error||('Request failed '+r.status)),{data:d,status:r.status});return d;}
 function autoGrow(){const e=$('input');e.style.height='auto';e.style.height=Math.min(200,e.scrollHeight)+'px';$('charCount').textContent=e.value.length.toLocaleString()+' / 50,000';}
 function activeTitle(){return (state.activeConversation&&state.activeConversation.title)||(state.conversations.find(x=>x.id===state.activeId)||{}).title||'New chat';}
 function header(){$('chatTitleButton').textContent=activeTitle();$('deleteChatTop').disabled=!state.activeId;$('exportChat').disabled=!state.messages.length;}
 function setSending(v){state.sending=v;$('sendBtn').textContent=v?'■':'↑';$('sendBtn').classList.toggle('stop',v);$('typing').classList.toggle('hidden',!v);}
 function when(v){if(!v)return'';const m=Math.floor((Date.now()-new Date(v).getTime())/60000);if(m<1)return'now';if(m<60)return m+'m';const h=Math.floor(m/60);if(h<24)return h+'h';const d=Math.floor(h/24);return d<7?d+'d':new Date(v).toLocaleDateString([], {month:'short',day:'numeric'});}
 
-async function status(){if(!configuredApiBase()){$('statusDot').className='status-dot setup';$('providerStatus').textContent='Backend URL not connected';$('settingsStatus').textContent='Supabase backend URL has not been attached to this build yet.';$('sendBtn').disabled=true;$('input').disabled=true;$('input').placeholder='Backend connection pending';return;}try{const d=await api('/api/status');$('sendBtn').disabled=!d.openrouter_enabled;$('input').disabled=!d.openrouter_enabled;$('input').placeholder=d.openrouter_enabled?'Message Uncensor AI…':'Backend connected — add OpenRouter key to enable chat';$('statusDot').className='status-dot '+(d.openrouter_enabled?'online':'setup');$('providerStatus').textContent=d.openrouter_enabled?'Backend + OpenRouter ready':'Backend connected · model key pending';const spend=Number(d.rolling_24h_spend||0),cap=Number(d.rolling_24h_cap||0);$('settingsStatus').textContent='Supabase connected · Memory '+(d.memory_enabled?'on':'off')+' · Background indexing '+(d.background_indexing_enabled?'on':'off')+' · USD '+spend.toFixed(3)+' / '+(cap?'USD '+cap.toFixed(2):'no cap')+' (24h)';if(d.default_model&&!localStorage.getItem('uncensor.model')&&[...$('modelSelect').options].some(o=>o.value===d.default_model))$('modelSelect').value=d.default_model;}catch(e){$('statusDot').className='status-dot setup';$('providerStatus').textContent='Backend unreachable';$('settingsStatus').textContent=e.message||'Backend connection failed';$('sendBtn').disabled=true;$('input').disabled=true;$('input').placeholder='Backend temporarily unavailable';}}
+async function status(){if(!configuredApiBase()){$('statusDot').className='status-dot setup';$('providerStatus').textContent='Backend URL not connected';$('settingsStatus').textContent='Supabase backend URL has not been attached to this build yet.';$('sendBtn').disabled=true;$('input').disabled=true;$('input').placeholder='Backend connection pending';return;}try{const d=await api('/api/status');$('sendBtn').disabled=!d.openrouter_enabled;$('input').disabled=!d.openrouter_enabled;$('input').placeholder=d.openrouter_enabled?'Message Uncensor AI…':'Backend connected — add OpenRouter key to enable chat';$('statusDot').className='status-dot '+(d.openrouter_enabled?'online':'setup');$('providerStatus').textContent=d.openrouter_enabled?'Backend + OpenRouter ready':'Backend connected · model key pending';state.googleSearchEnabled=Boolean(d.google_search_enabled);syncSettings();const spend=Number(d.rolling_24h_spend||0),cap=Number(d.rolling_24h_cap||0);$('settingsStatus').textContent='Supabase connected · Memory '+(d.memory_enabled?'on':'off')+' · Background indexing '+(d.background_indexing_enabled?'on':'off')+' · USD '+spend.toFixed(3)+' / '+(cap?'USD '+cap.toFixed(2):'no cap')+' (24h)';if(d.default_model&&!localStorage.getItem('uncensor.model')&&[...$('modelSelect').options].some(o=>o.value===d.default_model))$('modelSelect').value=d.default_model;}catch(e){$('statusDot').className='status-dot setup';$('providerStatus').textContent='Backend unreachable';$('settingsStatus').textContent=e.message||'Backend connection failed';$('sendBtn').disabled=true;$('input').disabled=true;$('input').placeholder='Backend temporarily unavailable';}}
 
 function renderConversations(){const root=$('conversationList');root.innerHTML='';const q=$('chatSearch').value.trim().toLowerCase();const rows=state.conversations.filter(c=>!q||String(c.title||'').toLowerCase().includes(q));$('chatCount').textContent=String(state.conversations.length);if(!rows.length){root.innerHTML='<div class="empty-list">'+(q?'No matching chats.':'No saved chats yet.')+'</div>';return;}rows.forEach(c=>{const el=document.createElement('div');el.className='conversation-item'+(c.id===state.activeId?' active':'');const open=document.createElement('button');open.className='conversation-open';open.innerHTML='<span class="title">'+(c.pinned?'★ ':'')+esc(c.title||'New chat')+'</span><small>'+when(c.updated_at)+'</small>';open.onclick=()=>openChat(c.id);const a=document.createElement('div');a.className='conversation-actions';const pin=document.createElement('button');pin.textContent=c.pinned?'★':'☆';pin.title=c.pinned?'Unpin':'Pin';pin.onclick=e=>{e.stopPropagation();patchChat(c.id,{pinned:!c.pinned});};const ren=document.createElement('button');ren.textContent='✎';ren.title='Rename';ren.onclick=e=>{e.stopPropagation();renameChat(c.id,c.title);};const del=document.createElement('button');del.textContent='×';del.className='danger-hover';del.title='Delete permanently';del.onclick=e=>{e.stopPropagation();deleteChat(c.id,c.title);};a.append(pin,ren,del);el.append(open,a);root.append(el);});}
 async function loadChats(){try{const d=await api('/api/conversations');state.conversations=d.conversations||[];if(state.activeId)state.activeConversation=state.conversations.find(x=>x.id===state.activeId)||state.activeConversation;renderConversations();header();}catch{state.conversations=[];renderConversations();}}
@@ -74,23 +97,26 @@ function addWebsiteAttachment(){
 }
 function clearPendingAttachments(){state.pendingAttachments=[];renderAttachmentTray();}
 
-function appendMessage(m,scroll=true){$('emptyState').classList.add('hidden');const root=$('messages'),el=document.createElement('article');el.className='message '+m.role;const atts=(m.attachments||[]).slice(0,12),attHtml=atts.length?'<div class="message-attachments">'+atts.map(a=>'<span class="message-attachment">'+attIcon(a.kind)+' '+esc(a.name||a.url||'Attachment')+'</span>').join('')+'</div>':'';if(m.role==='assistant'){const sources=(m.sources||[]).slice(0,8);el.innerHTML='<div class="avatar">U</div><div class="message-content"><div class="message-body">'+md(m.content||'')+'</div>'+attHtml+(state.showSources&&sources.length?'<div class="source-chips">'+sources.map(s=>'<span class="source-chip">'+esc(s.title||'Knowledge')+'</span>').join('')+'</div>':'')+'<div class="message-actions"><button class="copy">Copy</button></div></div>';const b=el.querySelector('.copy');b.onclick=()=>{navigator.clipboard.writeText(m.content||'');toast('Copied');};}else el.innerHTML='<div class="message-body">'+md(m.content||'')+'</div>'+attHtml;root.append(el);if(scroll)root.scrollTop=root.scrollHeight;return el;}
+function safeHttpUrl(v){try{const u=new URL(String(v||''));return ['http:','https:'].includes(u.protocol)?u.toString():'';}catch{return'';}}
+async function saveWebSourcesToKnowledge(sources){const urls=[...new Set((sources||[]).map(s=>safeHttpUrl(s.url)).filter(Boolean))].slice(0,10);if(!urls.length)return;let added=0,dupes=0,failed=0;toast('Saving web sources to Knowledge…',5000);for(const url of urls){try{const d=await api('/api/knowledge/url',{method:'POST',body:JSON.stringify({url,collection:'Web Research'})});if(d.duplicate)dupes++;else added++;}catch{failed++;}}await loadKnowledge();toast(added+' saved'+(dupes?' · '+dupes+' already existed':'')+(failed?' · '+failed+' failed':''),4000);}
+function appendMessage(m,scroll=true){$('emptyState').classList.add('hidden');const root=$('messages'),el=document.createElement('article');el.className='message '+m.role;const atts=(m.attachments||[]).slice(0,12),attHtml=atts.length?'<div class="message-attachments">'+atts.map(a=>'<span class="message-attachment">'+attIcon(a.kind)+' '+esc(a.name||a.url||'Attachment')+'</span>').join('')+'</div>':'';if(m.role==='assistant'){const sources=(m.sources||[]).slice(0,12),webSources=sources.filter(s=>safeHttpUrl(s.url));const sourceHtml=state.showSources&&sources.length?'<div class="source-chips">'+sources.map(s=>{const u=safeHttpUrl(s.url),label=(s.ref?s.ref+' · ':'')+(s.title|| (u?new URL(u).hostname:'Knowledge'));return u?'<a class="source-chip web-source" href="'+esc(u)+'" target="_blank" rel="noopener noreferrer">'+esc(label)+'</a>':'<span class="source-chip">'+esc(label)+'</span>';}).join('')+'</div>':'';el.innerHTML='<div class="avatar">U</div><div class="message-content"><div class="message-body">'+md(m.content||'')+'</div>'+attHtml+sourceHtml+'<div class="message-actions"><button class="copy">Copy</button>'+(webSources.length?'<button class="save-web">Save web sources to Knowledge</button>':'')+'</div></div>';el.querySelector('.copy').onclick=()=>{navigator.clipboard.writeText(m.content||'');toast('Copied');};const save=el.querySelector('.save-web');if(save)save.onclick=()=>saveWebSourcesToKnowledge(webSources);}else el.innerHTML='<div class="message-body">'+md(m.content||'')+'</div>'+attHtml;root.append(el);if(scroll)root.scrollTop=root.scrollHeight;return el;}
 function renderMessages(){const root=$('messages');root.innerHTML='';$('emptyState').classList.toggle('hidden',state.messages.length>0);state.messages.forEach(m=>appendMessage(m,false));root.scrollTop=root.scrollHeight;header();}
 
 async function send(text){
   if(state.sending){state.abort&&state.abort.abort();return;}
   const t=String(text||'').trim();if(!t&&!state.pendingAttachments.length)return;
+  if(!ensurePrivateAuth())return;
   const sendingAttachments=state.pendingAttachments.map(a=>({...a}));
+  const useResearch=state.webResearch&&sendingAttachments.length===0;
   const user={role:'user',content:t||'Please analyze the attached item.',attachments:sendingAttachments};state.messages.push(user);appendMessage(user);
   $('input').value='';autoGrow();setSending(true);state.abort=new AbortController();
   const assistant={role:'assistant',content:'',sources:[]};let node=null;
   const safeMobile=/iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const typingLabel=$('typing').querySelector('em');if(typingLabel)typingLabel.textContent=useResearch?'Researching current web…':'Thinking…';
   try{
-    const key=ensureAccessKey();if(!key)throw new Error('Private access key is required.');
-    const r=await fetch(endpoint('/api/chat'),{
-      method:'POST',
-      signal:state.abort.signal,
-      headers:{'Content-Type':'application/json','x-uncensor-key':key},
+    const route=useResearch?'/api/research':'/api/chat';
+    const r=await fetch(endpoint(route),{
+      method:'POST',signal:state.abort.signal,headers:authHeaders(),
       body:JSON.stringify({
         conversation_id:state.activeId,
         message:t||'Please analyze the attached item.',
@@ -99,82 +125,32 @@ async function send(text){
         use_knowledge:state.knowledgeEnabled,
         style_prompt:state.style,
         response_mode:state.mode,
-        stream:!safeMobile
+        stream:useResearch?false:!safeMobile
       })
     });
-    if(!r.ok){const d=await r.json().catch(()=>({}));throw Object.assign(new Error(d.error||'Chat request failed'),{data:d,status:r.status});}
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw Object.assign(new Error(d.error||'Request failed'),{data:d,status:r.status});}
 
-    if(safeMobile){
+    if(useResearch||safeMobile){
       const d=await r.json();
-      assistant.content=String(d.content||'');
-      assistant.sources=Array.isArray(d.sources)?d.sources:[];
+      assistant.content=String(d.content||'');assistant.sources=Array.isArray(d.sources)?d.sources:[];
       if(d.conversation_id)state.activeId=d.conversation_id;
       if(d.title)state.activeConversation=Object.assign({},state.activeConversation||{},{id:state.activeId,title:d.title});
       $('typing').classList.add('hidden');
       if(!assistant.content.trim())throw new Error('The model returned an empty response.');
-      state.messages.push(assistant);
-      appendMessage(assistant);
+      state.messages.push(assistant);appendMessage(assistant);
+      if(useResearch&&Array.isArray(d.search_queries)&&d.search_queries.length)toast('Web research used '+d.search_queries.length+' Google search '+(d.search_queries.length===1?'query':'queries')+'.',3500);
     }else{
-      $('typing').classList.add('hidden');
-      node=appendMessage(assistant);
+      $('typing').classList.add('hidden');node=appendMessage(assistant);
       const reader=r.body.getReader(),dec=new TextDecoder();let buffer='';
-      while(true){
-        const part=await reader.read();if(part.done)break;
-        buffer+=dec.decode(part.value,{stream:true});
-        const events=buffer.split('\n\n');buffer=events.pop()||'';
-        for(const raw of events){
-          if(!raw.startsWith('data:'))continue;
-          const p=raw.slice(5).trim();if(!p||p==='[DONE]')continue;
-          let e;try{e=JSON.parse(p);}catch{continue;}
-          if(e.type==='meta'){
-            if(e.conversation_id)state.activeId=e.conversation_id;
-            if(e.title)state.activeConversation=Object.assign({},state.activeConversation||{},{id:state.activeId,title:e.title});
-            if(Array.isArray(e.sources))assistant.sources=e.sources;
-          }
-          if(e.type==='token'){
-            assistant.content+=e.text||'';
-            node.querySelector('.message-body').innerHTML=md(assistant.content);
-            $('messages').scrollTop=$('messages').scrollHeight;
-          }
-          if(e.type==='error')throw new Error(e.error||'Model error');
-        }
-      }
+      while(true){const part=await reader.read();if(part.done)break;buffer+=dec.decode(part.value,{stream:true});const events=buffer.split('\n\n');buffer=events.pop()||'';for(const raw of events){if(!raw.startsWith('data:'))continue;const p=raw.slice(5).trim();if(!p||p==='[DONE]')continue;let e;try{e=JSON.parse(p);}catch{continue;}if(e.type==='meta'){if(e.conversation_id)state.activeId=e.conversation_id;if(e.title)state.activeConversation=Object.assign({},state.activeConversation||{},{id:state.activeId,title:e.title});if(Array.isArray(e.sources))assistant.sources=e.sources;}if(e.type==='token'){assistant.content+=e.text||'';node.querySelector('.message-body').innerHTML=md(assistant.content);$('messages').scrollTop=$('messages').scrollHeight;}if(e.type==='error')throw new Error(e.error||'Model error');}}
       if(assistant.content.trim())state.messages.push(assistant);else node&&node.remove();
     }
     clearPendingAttachments();await loadChats();await status();
   }catch(e){
     $('typing').classList.add('hidden');
-    if(e.name==='AbortError'){
-      if(node&&assistant.content.trim()){assistant.content+='\n\n_[Stopped]_';state.messages.push(assistant);}
-      else if(node)node.remove();
-      toast('Generation stopped');
-    }else{
-      let recovered=false;
-      try{
-        await loadChats();
-        if(state.activeId){
-          const d=await api('/api/conversations/'+encodeURIComponent(state.activeId));
-          const serverMessages=d.messages||[];
-          const latest=[...serverMessages].reverse().find(m=>m.role==='assistant'&&m.content);
-          if(latest){
-            state.activeConversation=d.conversation;
-            state.messages=serverMessages;
-            renderMessages();
-            recovered=true;
-            toast('Connection recovered — answer restored from the server.',3500);
-          }
-        }
-      }catch{}
-      if(!recovered){
-        assistant.content='Error: '+(e.message||'Request failed');
-        state.messages.push(assistant);
-        if(node)node.querySelector('.message-body').innerHTML=md(assistant.content);else appendMessage(assistant);
-        toast(e.data&&e.data.setup_required?'OpenRouter is not configured.':(e.message||'Request failed'),3500);
-      }
-    }
-  }finally{
-    state.abort=null;setSending(false);header();$('input').focus();
-  }
+    if(e.name==='AbortError'){if(node&&assistant.content.trim()){assistant.content+='\n\n_[Stopped]_';state.messages.push(assistant);}else if(node)node.remove();toast('Generation stopped');}
+    else{let recovered=false;try{await loadChats();if(state.activeId){const d=await api('/api/conversations/'+encodeURIComponent(state.activeId));const serverMessages=d.messages||[];const latest=[...serverMessages].reverse().find(m=>m.role==='assistant'&&m.content);if(latest){state.activeConversation=d.conversation;state.messages=serverMessages;renderMessages();recovered=true;toast('Connection recovered — answer restored from the server.',3500);}}}catch{}if(!recovered){assistant.content='Error: '+(e.message||'Request failed');state.messages.push(assistant);if(node)node.querySelector('.message-body').innerHTML=md(assistant.content);else appendMessage(assistant);toast(e.data&&e.data.research_setup_required?'Google Web Research needs its Gemini API key.':(e.message||'Request failed'),4500);}}
+  }finally{state.abort=null;setSending(false);if(typingLabel)typingLabel.textContent='Thinking…';header();$('input').focus();}
 }
 
 function knowledgeCollection(x){return String((x.metadata&&x.metadata.collection)||'').trim();}
@@ -464,7 +440,7 @@ function openModal(id){$(id).classList.remove('hidden');if(id==='knowledgeModal'
 function closeModal(id){$(id).classList.add('hidden');if(id==='knowledgeModal'&&state.knowledgePollTimer){clearTimeout(state.knowledgePollTimer);state.knowledgePollTimer=null;}}
 function openSidebar(){$('sidebar').classList.add('open');$('backdrop').classList.add('show');}
 function closeSidebar(){$('sidebar').classList.remove('open');$('backdrop').classList.remove('show');}
-function syncSettings(){$('accessKeyInput').value=accessKey();$('settingKnowledge').checked=state.knowledgeEnabled;$('settingSources').checked=state.showSources;$('stylePrompt').value=state.style;$('responseMode').value=state.mode;$('knowledgeToggle').classList.toggle('active',state.knowledgeEnabled);$('knowledgeToggle').textContent=state.knowledgeEnabled?'Knowledge on':'Knowledge off';$('modeLabel').textContent=(state.mode==='direct'?'Direct':state.mode.charAt(0).toUpperCase()+state.mode.slice(1))+' mode';}
+function syncSettings(){$('accessKeyInput').value=accessKey();$('settingKnowledge').checked=state.knowledgeEnabled;$('settingSources').checked=state.showSources;$('stylePrompt').value=state.style;$('responseMode').value=state.mode;$('knowledgeToggle').classList.toggle('active',state.knowledgeEnabled);$('knowledgeToggle').textContent=state.knowledgeEnabled?'Knowledge on':'Knowledge off';$('webToggle').classList.toggle('active',state.webResearch);$('webToggle').textContent=state.webResearch?(state.googleSearchEnabled?'Web on':'Web setup'):'Web off';$('modeLabel').textContent=(state.mode==='direct'?'Direct':state.mode.charAt(0).toUpperCase()+state.mode.slice(1))+' mode';const exp=localStorage.getItem('uncensor.sessionExpires');$('deviceSessionStatus').textContent=sessionToken()?'Enrolled'+(exp?' · expires '+new Date(exp).toLocaleDateString():''):accessKey()?'Master key ready to enroll':'Not enrolled';$('revokeThisDevice').disabled=!sessionToken();}
 
 $('composer').onsubmit=e=>{e.preventDefault();send($('input').value);};
 $('sendBtn').onclick=e=>{if(state.sending){e.preventDefault();state.abort&&state.abort.abort();}};
@@ -484,9 +460,9 @@ $('addWebsiteAttachment').onclick=addWebsiteAttachment;
 $('websiteUrlInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();addWebsiteAttachment();}};
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));document.querySelectorAll('.modal').forEach(m=>m.onclick=e=>{if(e.target===m)closeModal(m.id);});
 $('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;$('knowledgeFile').onchange=e=>stageKnowledgeFiles(e.target.files);$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
-$('knowledgeToggle').onclick=()=>{state.knowledgeEnabled=!state.knowledgeEnabled;localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));syncSettings();};
-$('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);
-$('saveSettings').onclick=()=>{state.knowledgeEnabled=$('settingKnowledge').checked;state.showSources=$('settingSources').checked;state.mode=$('responseMode').value;state.style=$('stylePrompt').value.trim()||DEFAULT_STYLE;const k=$('accessKeyInput').value.trim();if(k)localStorage.setItem('uncensor.accessKey',k);else localStorage.removeItem('uncensor.accessKey');localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));localStorage.setItem('uncensor.sources',String(state.showSources));localStorage.setItem('uncensor.mode',state.mode);localStorage.setItem('uncensor.style',state.style);syncSettings();closeModal('settingsModal');renderMessages();toast('Settings saved');loadChats();loadKnowledge();loadMemories();status();};
+$('webToggle').onclick=()=>{state.webResearch=!state.webResearch;localStorage.setItem('uncensor.webResearch',String(state.webResearch));syncSettings();if(state.webResearch&&!state.googleSearchEnabled)toast('Web Research is ready in the app, but you still need to add GEMINI_API_KEY in Supabase.',4500);};$('knowledgeToggle').onclick=()=>{state.knowledgeEnabled=!state.knowledgeEnabled;localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));syncSettings();};
+$('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);$('revokeThisDevice').onclick=revokeCurrentDevice;
+$('saveSettings').onclick=async()=>{state.knowledgeEnabled=$('settingKnowledge').checked;state.showSources=$('settingSources').checked;state.mode=$('responseMode').value;state.style=$('stylePrompt').value.trim()||DEFAULT_STYLE;const k=$('accessKeyInput').value.trim();if(k)localStorage.setItem('uncensor.accessKey',k);localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));localStorage.setItem('uncensor.sources',String(state.showSources));localStorage.setItem('uncensor.mode',state.mode);localStorage.setItem('uncensor.style',state.style);try{if(accessKey())await enrollDeviceSession();syncSettings();closeModal('settingsModal');renderMessages();toast('Settings saved · device enrolled');await Promise.all([loadChats(),loadKnowledge(),loadMemories(),status()]);}catch(e){toast(e.message||'Could not enroll device',4500);syncSettings();}};
 document.querySelectorAll('.prompt-card').forEach(b=>b.onclick=()=>{$('input').value=b.dataset.prompt||'';autoGrow();$('input').focus();});
 
-(async function(){const saved=localStorage.getItem('uncensor.model');if(saved&&[...$('modelSelect').options].some(o=>o.value===saved))$('modelSelect').value=saved;syncSettings();autoGrow();header();await status();if(configuredApiBase()){if(accessKey()){await Promise.all([loadChats(),loadKnowledge(),loadMemories()]);}else{syncSettings();openModal('settingsModal');}}})();
+(async function(){const saved=localStorage.getItem('uncensor.model');if(saved&&[...$('modelSelect').options].some(o=>o.value===saved))$('modelSelect').value=saved;syncSettings();autoGrow();header();await status();if(configuredApiBase()){if(!sessionToken()&&accessKey()){try{await enrollDeviceSession();}catch{}}if(hasPrivateAuth()){await Promise.all([loadChats(),loadKnowledge(),loadMemories()]);}else{syncSettings();openModal('settingsModal');}}})();
