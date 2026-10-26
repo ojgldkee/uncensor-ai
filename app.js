@@ -21,6 +21,12 @@ const state={conversations:[],activeId:null,activeConversation:null,messages:[],
 
 function esc(v){return String(v||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
 function md(v){let s=esc(v);s=s.replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h1>$1</h1>');s=s.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>');return s.split(/\n{2,}/).map(p=>/^<h\d/.test(p)?p:'<p>'+p.replace(/\n/g,'<br>')+'</p>').join('');}
+const clientErrors=[];
+function recordClientError(scope,error){
+  const message=error instanceof Error?error.message:String(error||'Unknown client error');
+  clientErrors.unshift({scope:String(scope||'client'),message:message.slice(0,500),at:new Date().toISOString()});
+  if(clientErrors.length>12)clientErrors.length=12;
+}
 function toast(t,ms=2500){const e=$('toast');e.textContent=t;e.classList.remove('hidden');clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.add('hidden'),ms);}
 async function copyText(v){
   const text=String(v||'');
@@ -121,8 +127,16 @@ async function exportFullBackup(){
 }
 async function api(path,opt={},attempt=0){
   const method=String(opt.method||'GET').toUpperCase(),canRetry=method==='GET'&&attempt<2;
+  const controller=new AbortController(),external=opt.signal||null;
+  const timeoutMs=Math.max(5000,Number(opt.timeoutMs||30000));
+  const timer=setTimeout(()=>controller.abort(),timeoutMs);
+  const onAbort=()=>controller.abort();
+  if(external)external.addEventListener('abort',onAbort,{once:true});
   try{
-    const h=Object.assign(authHeaders(),opt.headers||{}),r=await fetch(endpoint(path),Object.assign({},opt,{headers:h}));
+    const h=Object.assign(authHeaders(),opt.headers||{});
+    const request=Object.assign({},opt,{headers:h,signal:controller.signal});
+    delete request.timeoutMs;
+    const r=await fetch(endpoint(path),request);
     const tx=await r.text();let d={};try{d=tx?JSON.parse(tx):{};}catch{d={error:tx||'Unexpected response'};}
     if(r.status===401&&d.requires_access_key&&sessionToken()){localStorage.removeItem('uncensor.sessionToken');localStorage.removeItem('uncensor.sessionId');localStorage.removeItem('uncensor.sessionExpires');syncSettings();}
     if(!r.ok){
@@ -131,8 +145,18 @@ async function api(path,opt={},attempt=0){
     }
     return d;
   }catch(e){
-    if(canRetry&&!(e&&e.status)){await new Promise(x=>setTimeout(x,350*(attempt+1)));return api(path,opt,attempt+1);}
+    if(e?.name==='AbortError'&&!external?.aborted){
+      const timeoutError=Object.assign(new Error('Request timed out. Check your connection and try again.'),{code:'TIMEOUT'});
+      recordClientError(path,timeoutError);
+      if(canRetry){await new Promise(x=>setTimeout(x,350*(attempt+1)));return api(path,opt,attempt+1);}
+      throw timeoutError;
+    }
+    if(canRetry&&!(e&&e.status)&&!external?.aborted){await new Promise(x=>setTimeout(x,350*(attempt+1)));return api(path,opt,attempt+1);}
+    if(!external?.aborted)recordClientError(path,e);
     throw e;
+  }finally{
+    clearTimeout(timer);
+    if(external)external.removeEventListener('abort',onAbort);
   }
 }
 function autoGrow(){const e=$('input');e.style.height='auto';e.style.height=Math.min(200,e.scrollHeight)+'px';$('charCount').textContent=e.value.length.toLocaleString()+' / 50,000';}
@@ -164,8 +188,8 @@ async function health(){
 }
 
 function renderConversations(){const root=$('conversationList');root.innerHTML='';const q=$('chatSearch').value.trim().toLowerCase();const rows=state.conversations.filter(c=>!q||String(c.title||'').toLowerCase().includes(q));$('chatCount').textContent=String(state.conversations.length);if(!rows.length){root.innerHTML='<div class="empty-list">'+(q?'No matching chats.':'No saved chats yet.')+'</div>';return;}rows.forEach(c=>{const el=document.createElement('div');el.className='conversation-item'+(c.id===state.activeId?' active':'');const open=document.createElement('button');open.className='conversation-open';open.innerHTML='<span class="title">'+(c.pinned?'★ ':'')+esc(c.title||'New chat')+'</span><small>'+when(c.updated_at)+'</small>';open.onclick=()=>openChat(c.id);const a=document.createElement('div');a.className='conversation-actions';const pin=document.createElement('button');pin.textContent=c.pinned?'★':'☆';pin.title=c.pinned?'Unpin':'Pin';pin.onclick=e=>{e.stopPropagation();patchChat(c.id,{pinned:!c.pinned});};const ren=document.createElement('button');ren.textContent='✎';ren.title='Rename';ren.onclick=e=>{e.stopPropagation();renameChat(c.id,c.title);};const del=document.createElement('button');del.textContent='×';del.className='danger-hover';del.title='Delete permanently';del.onclick=e=>{e.stopPropagation();deleteChat(c.id,c.title);};a.append(pin,ren,del);el.append(open,a);root.append(el);});}
-async function loadChats(){try{const d=await api('/api/conversations');state.conversations=d.conversations||[];if(state.activeId)state.activeConversation=state.conversations.find(x=>x.id===state.activeId)||state.activeConversation;renderConversations();header();}catch{state.conversations=[];renderConversations();}}
-async function openChat(id){state.activeId=id;try{const d=await api('/api/conversations/'+encodeURIComponent(id));state.activeConversation=d.conversation;state.messages=d.messages||[];renderMessages();renderConversations();header();syncKnowledgeScopeUI();if(!$('knowledgeModal').classList.contains('hidden'))loadKnowledge();closeSidebar();}catch(e){toast(e.message);}}
+async function loadChats(){try{const d=await api('/api/conversations');state.conversations=d.conversations||[];if(state.activeId)state.activeConversation=state.conversations.find(x=>x.id===state.activeId)||state.activeConversation;renderConversations();header();}catch(e){recordClientError('loadChats',e);renderConversations();header();}}
+async function openChat(id){const previousId=state.activeId,previousConversation=state.activeConversation;state.activeId=id;try{const d=await api('/api/conversations/'+encodeURIComponent(id));if(!d.conversation)throw new Error('Chat was not found.');state.activeConversation=d.conversation;state.messages=d.messages||[];renderMessages();renderConversations();header();syncKnowledgeScopeUI();if(!$('knowledgeModal').classList.contains('hidden'))loadKnowledge();closeSidebar();}catch(e){state.activeId=previousId;state.activeConversation=previousConversation;renderConversations();header();recordClientError('openChat',e);toast(e.message||'Could not open chat');}}
 async function patchChat(id,p){try{const d=await api('/api/conversations/'+encodeURIComponent(id),{method:'PATCH',body:JSON.stringify(p)});if(id===state.activeId&&d.conversation)state.activeConversation=d.conversation;await loadChats();return d.conversation||true;}catch(e){toast(e.message||'Could not update chat',4000);throw e;}}
 async function setUseGlobalKnowledge(enabled){
   if(!state.activeId)return;
@@ -766,11 +790,26 @@ async function ingestKnowledgeMedia(){
 }
 
 let pdfjsKnowledgePromise=null;
+async function loadPdfJs(){
+  if(!pdfjsKnowledgePromise){
+    pdfjsKnowledgePromise=Promise.race([
+      import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs'),
+      new Promise((_,reject)=>setTimeout(()=>reject(new Error('PDF reader load timed out')),15000))
+    ]).catch(e=>{pdfjsKnowledgePromise=null;throw e;});
+  }
+  try{return await pdfjsKnowledgePromise;}
+  catch(e){throw new Error('The PDF reader could not load. Check your connection and try the PDF again.');}
+}
 async function extractKnowledgePdf(file,onProgress){
-  if(!pdfjsKnowledgePromise)pdfjsKnowledgePromise=import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');
-  const pdfjs=await pdfjsKnowledgePromise;
+  const pdfjs=await loadPdfJs();
   pdfjs.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
-  const document=await pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;
+  let document;
+  try{document=await pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer()),useSystemFonts:true}).promise;}
+  catch(e){
+    const msg=String(e?.message||e||'');
+    if(/password/i.test(msg))throw new Error('This PDF is password-protected. Remove the password and upload it again.');
+    throw new Error('This PDF could not be opened. It may be damaged or use an unsupported format.');
+  }
   const pages=[];
   try{
     for(let n=1;n<=document.numPages;n++){
@@ -787,9 +826,9 @@ async function extractKnowledgePdf(file,onProgress){
       pages.push('[PDF page '+n+']\n'+text.trim());
       if(onProgress)onProgress(n,document.numPages);
     }
-  }finally{await document.destroy();}
+  }finally{try{await document.destroy();}catch{}}
   const result=pages.join('\n\n');
-  if(result.replace(/\[PDF page \d+\]/g,'').trim().length<20)throw new Error('This PDF has no extractable text. Scanned/image-only PDFs need OCR support.');
+  if(result.replace(/\[PDF page \d+\]/g,'').trim().length<20)throw new Error('This PDF appears to be scanned/image-only and has no selectable text. Text PDFs work now; scanned-PDF OCR is not enabled yet.');
   return result;
 }
 async function ingestFileKnowledge(){
@@ -880,8 +919,39 @@ async function ingestFileKnowledge(){
 }
 
 
+async function runDiagnostics(showToast=true){
+  const btn=$('runDiagnostics'),summary=$('diagnosticsSummary'),detail=$('diagnosticsDetail');
+  if(!btn||!summary||!detail)return;
+  btn.disabled=true;summary.textContent='Running checks…';detail.innerHTML='<div class="diagnostic-row"><span>Checking frontend and backend</span><strong>…</strong></div>';
+  const local=[
+    {name:'Backend URL',ok:Boolean(configuredApiBase()),detail:configuredApiBase()?'configured':'missing'},
+    {name:'Secure browser context',ok:window.isSecureContext===true,detail:window.isSecureContext?'HTTPS active':'HTTPS required'},
+    {name:'File hashing',ok:Boolean(globalThis.crypto?.subtle),detail:globalThis.crypto?.subtle?'available':'unavailable'},
+    {name:'Private device session',ok:hasPrivateAuth(),detail:hasPrivateAuth()?'linked':'not linked'},
+  ];
+  try{
+    if(!hasPrivateAuth())throw new Error('Link this device first to run private backend checks.');
+    const d=await api('/api/diagnostics',{timeoutMs:20000});
+    const remote=Array.isArray(d.checks)?d.checks:[];
+    const checks=[...local,...remote];
+    const failed=checks.filter(x=>!x.ok);
+    summary.textContent=failed.length?failed.length+' check'+(failed.length===1?'':'s')+' need attention':'All '+checks.length+' checks passed';
+    summary.classList.toggle('health-good',failed.length===0);summary.classList.toggle('health-bad',failed.length>0);
+    detail.innerHTML=checks.map(x=>'<div class="diagnostic-row '+(x.ok?'ok':'bad')+'"><span>'+esc(x.name||x.id||'Check')+'<small>'+esc(x.detail||'')+'</small></span><strong>'+(x.ok?'PASS':'CHECK')+'</strong></div>').join('')+
+      (clientErrors.length?'<details class="client-error-log"><summary>Recent local errors ('+clientErrors.length+')</summary>'+clientErrors.slice(0,8).map(x=>'<div><b>'+esc(x.scope)+'</b> · '+esc(x.message)+'<small>'+esc(new Date(x.at).toLocaleTimeString())+'</small></div>').join('')+'</details>':'');
+    if(showToast)toast(failed.length?'Diagnostics found '+failed.length+' item'+(failed.length===1?'':'s')+' to check':'Diagnostics passed',3500);
+  }catch(e){
+    recordClientError('diagnostics',e);
+    const checks=local;
+    summary.textContent='Backend diagnostics unavailable';
+    summary.classList.remove('health-good');summary.classList.add('health-bad');
+    detail.innerHTML=checks.map(x=>'<div class="diagnostic-row '+(x.ok?'ok':'bad')+'"><span>'+esc(x.name)+'<small>'+esc(x.detail)+'</small></span><strong>'+(x.ok?'PASS':'CHECK')+'</strong></div>').join('')+'<div class="diagnostic-error">'+esc(e.message||'Diagnostics failed')+'</div>';
+    if(showToast)toast(e.message||'Diagnostics failed',4500);
+  }finally{btn.disabled=false;}
+}
+
 function renderMemories(){const root=$('memoryList');root.innerHTML='';const q=$('memorySearch').value.trim().toLowerCase();const rows=state.memories.filter(m=>!q||String(m.content||'').toLowerCase().includes(q)||String(m.category||'').toLowerCase().includes(q));$('memoryCount').textContent=state.memories.length+' memor'+(state.memories.length===1?'y':'ies');if(!rows.length){root.innerHTML='<div class="empty-list">'+(q?'No matching memories.':'No durable memories yet. The AI will build these automatically from chats.')+'</div>';return;}rows.forEach(m=>{const el=document.createElement('div');el.className='knowledge-item'+(m.active===false?' disabled':'');el.innerHTML='<div class="knowledge-item-head"><div><strong>'+esc(m.category||'memory')+(m.pinned?' · pinned':'')+'</strong><small style="line-height:1.45">'+esc(m.content||'')+'</small><small>importance '+Number(m.importance||5)+'/10 · '+Math.round(Number(m.confidence||0)*100)+'% confidence</small></div><div class="knowledge-actions"><button class="pin">'+(m.pinned?'★':'☆')+'</button><button class="toggle">'+(m.active===false?'○':'●')+'</button><button class="rename">✎</button><button class="delete danger-hover">×</button></div></div>';el.querySelector('.pin').onclick=async()=>{await api('/api/memories/'+encodeURIComponent(m.id),{method:'PATCH',body:JSON.stringify({pinned:!m.pinned})});loadMemories();};el.querySelector('.toggle').onclick=async()=>{await api('/api/memories/'+encodeURIComponent(m.id),{method:'PATCH',body:JSON.stringify({active:m.active===false})});loadMemories();};el.querySelector('.rename').onclick=async()=>{const n=prompt('Edit this memory',m.content||'');if(n&&n.trim()){await api('/api/memories/'+encodeURIComponent(m.id),{method:'PATCH',body:JSON.stringify({content:n.trim().slice(0,4000)})});loadMemories();}};el.querySelector('.delete').onclick=async()=>{if(confirm('Permanently delete this memory?')){await api('/api/memories/'+encodeURIComponent(m.id),{method:'DELETE'});await loadMemories();toast('Memory deleted');}};root.append(el);});}
-async function loadMemories(){try{const d=await api('/api/memories');state.memories=d.memories||[];renderMemories();}catch(e){state.memories=[];$('memoryCount').textContent='Memory unavailable';if($('memoryList'))$('memoryList').innerHTML='<div class="error-list">'+esc(e.message)+'</div>';}}
+async function loadMemories(){try{const d=await api('/api/memories');state.memories=d.memories||[];renderMemories();}catch(e){recordClientError('loadMemories',e);$('memoryCount').textContent=state.memories.length?state.memories.length+' memories · refresh failed':'Memory unavailable';if(!state.memories.length&&$('memoryList'))$('memoryList').innerHTML='<div class="error-list">'+esc(e.message)+'</div>';}}
 
 function exportChat(){if(!state.messages.length)return;const title=activeTitle(),body=['# '+title,''].concat(state.messages.flatMap(m=>['## '+(m.role==='user'?'You':'Assistant'),'',m.content||'',''])).join('\\n');const a=document.createElement('a'),blob=new Blob([body],{type:'text/markdown'});a.href=URL.createObjectURL(blob);a.download=(title.replace(/[^a-z0-9-_]+/gi,'-')||'chat')+'.md';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),500);}
 function openModal(id){$(id).classList.remove('hidden');if(id==='knowledgeModal'){switchKnowledgeTab(state.activeId?'library':'global');}if(id==='memoryModal')loadMemories();}
@@ -895,7 +965,7 @@ $('sendBtn').onclick=e=>{if(state.sending){e.preventDefault();state.abort&&state
 $('input').oninput=autoGrow;$('input').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('composer').requestSubmit();}};
 $('newChat').onclick=()=>newChat();$('chatSearch').oninput=renderConversations;$('menuBtn').onclick=openSidebar;$('closeSidebar').onclick=closeSidebar;$('backdrop').onclick=closeSidebar;
 $('chatTitleButton').onclick=()=>renameChat();$('deleteChatTop').onclick=()=>deleteChat();$('exportChat').onclick=exportChat;
-$('openMemory').onclick=()=>openModal('memoryModal');$('openKnowledge').onclick=()=>openModal('knowledgeModal');$('attachBtn').onclick=()=>openModal('attachSheet');$('openSettings').onclick=()=>{syncSettings();openModal('settingsModal');health();};
+$('openMemory').onclick=()=>openModal('memoryModal');$('openKnowledge').onclick=()=>openModal('knowledgeModal');$('attachBtn').onclick=()=>openModal('attachSheet');$('openSettings').onclick=()=>{syncSettings();openModal('settingsModal');health();runDiagnostics(false);};
 $('attachPhoto').onclick=()=>{$('photoInput').value='';$('photoInput').click();};
 $('attachFile').onclick=()=>{$('fileInput').value='';$('fileInput').click();};
 $('attachVideo').onclick=()=>{$('videoInput').value='';$('videoInput').click();};
@@ -909,8 +979,10 @@ $('websiteUrlInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();addWeb
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));document.querySelectorAll('.modal').forEach(m=>m.onclick=e=>{if(e.target===m)closeModal(m.id);});
 $('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeGlobalTab').onclick=()=>switchKnowledgeTab('global');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('useGlobalKnowledgeToggle').onchange=e=>setUseGlobalKnowledge(e.target.checked);$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;bindFileDropzone('knowledgeFile','knowledgeFileDropzone','knowledgeTextFileLabel',files=>stageTextKnowledgeFiles(files));$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('knowledgeSelectAll').onchange=e=>toggleAllVisibleKnowledge(e.target.checked);$('bulkMoveKnowledge').onclick=openBulkMoveKnowledge;$('clearKnowledgeSelection').onclick=()=>clearKnowledgeSelection();bindFileDropzone('knowledgeMediaFile','knowledgeMediaDropzone','knowledgeMediaFileLabel',files=>previewKnowledgeMedia(files[0]||null));$('saveKnowledgeMedia').onclick=ingestKnowledgeMedia;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
 $('webToggle').onclick=()=>{state.webResearch=!state.webResearch;localStorage.setItem('uncensor.webResearch',String(state.webResearch));syncSettings();if(state.webResearch&&!state.webResearchEnabled)toast('Web Research is temporarily unavailable.',4500);};$('knowledgeToggle').onclick=()=>{state.knowledgeEnabled=!state.knowledgeEnabled;localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));syncSettings();};
-$('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);$('exportFullBackup').onclick=exportFullBackup;$('saveRenameChat').onclick=saveChatRename;$('cancelRenameChat').onclick=()=>closeModal('renameChatModal');$('renameChatInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();saveChatRename();}};$('confirmMoveKnowledge').onclick=confirmMoveKnowledge;$('cancelMoveKnowledge').onclick=()=>closeModal('moveKnowledgeModal');$('revokeThisDevice').onclick=revokeCurrentDevice;$('generatePairingCode').onclick=generatePairingCode;$('redeemPairingCode').onclick=redeemPairingCode;$('pairingCodeInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();redeemPairingCode();}};$('rotateRecoveryKey').onclick=rotateRecoveryKeyFromDevice;$('copyRecoveryKey').onclick=()=>{const v=$('recoveryKeyValue').textContent||'';if(v){navigator.clipboard.writeText(v);toast('Recovery key copied');}};
+$('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);$('runDiagnostics').onclick=()=>runDiagnostics(true);$('exportFullBackup').onclick=exportFullBackup;$('saveRenameChat').onclick=saveChatRename;$('cancelRenameChat').onclick=()=>closeModal('renameChatModal');$('renameChatInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();saveChatRename();}};$('confirmMoveKnowledge').onclick=confirmMoveKnowledge;$('cancelMoveKnowledge').onclick=()=>closeModal('moveKnowledgeModal');$('revokeThisDevice').onclick=revokeCurrentDevice;$('generatePairingCode').onclick=generatePairingCode;$('redeemPairingCode').onclick=redeemPairingCode;$('pairingCodeInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();redeemPairingCode();}};$('rotateRecoveryKey').onclick=rotateRecoveryKeyFromDevice;$('copyRecoveryKey').onclick=()=>{const v=$('recoveryKeyValue').textContent||'';if(v){navigator.clipboard.writeText(v);toast('Recovery key copied');}};
 $('saveSettings').onclick=async()=>{state.knowledgeEnabled=$('settingKnowledge').checked;state.showSources=$('settingSources').checked;state.mode=$('responseMode').value;state.style=$('stylePrompt').value.trim()||DEFAULT_STYLE;const k=$('accessKeyInput').value.trim();if(k)localStorage.setItem('uncensor.accessKey',k);localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));localStorage.setItem('uncensor.sources',String(state.showSources));localStorage.setItem('uncensor.mode',state.mode);localStorage.setItem('uncensor.style',state.style);try{if(accessKey())await enrollDeviceSession();syncSettings();closeModal('settingsModal');renderMessages();toast(sessionToken()?'Settings saved · device enrolled':'Settings saved');if(hasPrivateAuth())await Promise.all([loadChats(),loadKnowledge(),loadMemories(),status(),health()]);}catch(e){localStorage.removeItem('uncensor.accessKey');syncSettings();toast((e.message||'Could not enroll device')+' Use a one-time link code from your enrolled phone if needed.',5500);}};
+window.addEventListener('error',e=>recordClientError('window',e.error||e.message));
+window.addEventListener('unhandledrejection',e=>recordClientError('promise',e.reason));
 document.querySelectorAll('.prompt-card').forEach(b=>b.onclick=()=>{$('input').value=b.dataset.prompt||'';autoGrow();$('input').focus();});
 
 (async function(){const saved=localStorage.getItem('uncensor.model');if(saved&&[...$('modelSelect').options].some(o=>o.value===saved))$('modelSelect').value=saved;syncSettings();autoGrow();header();await status();if(configuredApiBase()){if(!sessionToken()&&accessKey()){try{await enrollDeviceSession();}catch{localStorage.removeItem('uncensor.accessKey');syncSettings();}}if(hasPrivateAuth()){await loadChats();state.knowledgeScope=state.activeId?'chat':'global';await Promise.all([loadKnowledge(),loadMemories(),health()]);}else{authPromptShown=true;syncSettings();openModal('settingsModal');}}})();
