@@ -10,6 +10,8 @@ A private, single-user, mobile-first AI workspace with persistent chats, long-te
 - Cross-chat long-term memory
 - Global Knowledge library with background indexing
 - Large HTML/text ingestion with saved-page cleanup
+- Searchable scanned/screenshot PDFs with automatic page-level OCR and extraction quality checks
+- Batch video/audio Knowledge uploads with timestamped background analysis
 - Exact duplicate-file blocking with SHA-256
 - Batched OpenRouter embeddings + pgvector retrieval
 - Multiple models including DeepSeek, Venice Uncensored, GLM, Kimi, and multimodal routing
@@ -55,7 +57,11 @@ No Gemini API key is required. The existing OpenRouter key powers both model inf
 
 ## Knowledge
 
-Knowledge is global, not tied to a chat. Current direct ingestion supports websites and browser-readable text/HTML/code files. HTML saved-page exports are cleaned before indexing so embedded images, scripts, CSS, and base64 payloads do not pollute retrieval.
+Knowledge can be global or assigned to individual specialist chats. Direct ingestion supports websites, text/HTML/code, subtitle transcripts (SRT/VTT), and PDFs. HTML saved-page exports are cleaned before indexing so embedded images, scripts, CSS, and base64 payloads do not pollute retrieval.
+
+PDF.js extracts selectable PDF text locally. Pages containing screenshots with too little selectable text are rendered one at a time and passed to Tesseract.js v6 for browser-local English OCR; the result is checked for legible content, given page citations, and uploaded as text for background embedding. OCR itself uses no external AI API credits. Keep the tab open until PDF scanning and upload finish; only subsequent embedding is server-side. Large screenshot PDFs may take time on iPhone.
+
+Knowledge media uploads allow up to 10 files per batch (100 MB per video, 16 MB per audio file). Files up to 16 MB can receive separate audio transcription; Full mode can also analyze visuals. Larger videos receive visual analysis only, which may not capture every spoken word. For complete long-course spoken content, upload the course's TXT/SRT/VTT captions alongside the video. Source media is deleted after processing, and exact-duplicate files are skipped.
 
 Exact duplicate files are blocked by SHA-256 even if renamed.
 

@@ -1356,6 +1356,10 @@ async function knowledgeMediaCreate(req: Request) {
     await db.storage.from(ATTACHMENT_BUCKET).remove([path])
     return json({error:'Audio Knowledge is currently limited to 16 MB per file. Compress or split larger audio first.'},413)
   }
+  if(sourceType==='video'&&mode==='transcript'&&size>16*1024*1024){
+    await db.storage.from(ATTACHMENT_BUCKET).remove([path])
+    return json({error:'Transcript-only video is limited to 16 MB. Use Full video analysis or upload a separate transcript for larger recordings.'},413)
+  }
 
   const found=await findDuplicateFile(sha,title,size)
   if(found){

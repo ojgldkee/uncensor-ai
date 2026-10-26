@@ -289,12 +289,12 @@ function fileKind(file){
   if(type.startsWith('video/'))return'video';
   if(type.startsWith('audio/'))return'audio';
   if(type==='application/pdf'||name.endsWith('.pdf'))return'pdf';
-  if(type.startsWith('text/')||/\.(txt|md|csv|json|html?|log|js|ts|tsx|jsx|py|sql|css)$/i.test(name))return'text';
+  if(type.startsWith('text/')||/\.(txt|md|csv|json|html?|log|srt|vtt|js|ts|tsx|jsx|py|sql|css)$/i.test(name))return'text';
   return'file';
 }
 function isSupportedKnowledgeTextFile(file){
   if(String(file?.type||'').toLowerCase()==='application/pdf'||/\.pdf$/i.test(String(file?.name||'')))return true;
-  return /\.(txt|md|csv|json|html?|log|js|ts|tsx|jsx|py|sql|css)$/i.test(String(file?.name||'')) ||
+  return /\.(txt|md|csv|json|html?|log|srt|vtt|js|ts|tsx|jsx|py|sql|css)$/i.test(String(file?.name||'')) ||
     /^text\//i.test(String(file?.type||'')) || String(file?.type||'').toLowerCase()==='application/json';
 }
 function formatBytes(n){n=Number(n||0);if(n<1024)return n+' B';if(n<1048576)return(n/1024).toFixed(1)+' KB';return(n/1048576).toFixed(n>10485760?0:1)+' MB';}
@@ -612,8 +612,9 @@ function renderKnowledge(){
     const typeLabel=x.source_type==='website'?'Website':x.source_type==='file'?'File':x.source_type==='video'?'Video':x.source_type==='audio'?'Audio':'Notes';
     const typeIcon=x.source_type==='website'?'↗':x.source_type==='file'?'▤':x.source_type==='video'?'▶':x.source_type==='audio'?'♪':'✎';
     const partCount=(x._items||[]).length;
-    const mediaDetail=media?(' · '+esc(String(meta.media_stage||status).replaceAll('_',' '))+(meta.duration_seconds?' · '+Math.floor(Number(meta.duration_seconds)/60)+':'+String(Math.floor(Number(meta.duration_seconds)%60)).padStart(2,'0'):'')+(meta.reference_sections?' · '+Number(meta.reference_sections)+' refs':'')):'';
-    const baseDetail=media?(formatBytes(Number(meta.file_size||0))+mediaDetail):(Number(x.char_count||0).toLocaleString()+' chars · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks');
+    const mediaDetail=media?(' · '+esc(String(meta.media_stage||status).replaceAll('_',' '))+(meta.duration_seconds?' · '+Math.floor(Number(meta.duration_seconds)/60)+':'+String(Math.floor(Number(meta.duration_seconds)%60)).padStart(2,'0'):'')+(meta.reference_sections?' · '+Number(meta.reference_sections)+' refs':'')+(meta.transcript_method==='visual_video_analysis'?' · visual analysis only (spoken audio may be incomplete)':'')):'';
+    const pdfDetail=meta.pdf_pages?(' · '+Number(meta.pdf_pages)+' pages · '+Number(meta.pdf_ocr_pages||0)+' OCR · '+Number(meta.pdf_words||0).toLocaleString()+' words'):'';
+    const baseDetail=media?(formatBytes(Number(meta.file_size||0))+mediaDetail):(Number(x.char_count||0).toLocaleString()+' chars · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks'+pdfDetail);
     const globalSource=x.global_enabled===true||!(x.conversation_ids||[]).length;
     const scopeBadge='<span class="knowledge-scope-chip '+(globalSource?'global':'chat')+'">'+(globalSource?'GLOBAL':'CHAT ONLY')+'</span>';
     const selected=state.knowledgeSelected.has(String(x.id));
@@ -768,11 +769,11 @@ async function importKnowledgeUrls(){
     toast(added?'Web knowledge added to this chat':'Website import finished',3500);
   }finally{btn.disabled=false;}
 }
-async function ingestOne(j){
-  if(!state.activeId)throw new Error('Send one message first so this chat exists, then add Knowledge.')
+async function ingestOne(j,conversationId=state.activeId){
+  if(!conversationId)throw new Error('Send one message first so this chat exists, then add Knowledge.')
   const collection=$('knowledgeCollection').value.trim().slice(0,80);
   const metadata=Object.assign({},j.metadata||{},{collection});
-  const d=await api('/api/knowledge',{method:'POST',body:JSON.stringify({title:j.title,text:j.text,source_type:j.type,metadata,conversation_id:state.activeId})});
+  const d=await api('/api/knowledge',{method:'POST',body:JSON.stringify({title:j.title,text:j.text,source_type:j.type,metadata,conversation_id:conversationId})});
   if(d.duplicate)return{chunks:0,duplicate:true,duplicateReason:d.duplicate_reason||'content',sourceId:d.source?.id||null,title:(d.source&&d.source.title)||j.title};
   return{chunks:Number(d.chunk_count||0),duplicate:false,sourceId:d.source_id||null,title:j.title};
 }
@@ -824,8 +825,9 @@ function signedUploadFile(file,url,onProgress){
 function setFilePickerLabel(inputId,labelId){
   const input=$(inputId),label=$(labelId);if(!input||!label)return;
   if(inputId==='knowledgeMediaFile'){
-    const file=input.files?.[0];
-    label.textContent=file?file.name:'or drag & drop it here · video up to 100 MB · audio up to 16 MB';
+    const files=state.knowledgeMediaFiles||[];
+    label.textContent=files.length>1?files.length+' media files ready':
+      files.length===1?files[0].name:'Choose multiple videos · 100 MB/video · 16 MB/audio';
     return;
   }
   if(inputId==='knowledgeFile'){
@@ -857,19 +859,43 @@ function bindFileDropzone(inputId,zoneId,labelId,onFiles){
   ['dragleave','drop'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.remove('dragging');}));
   zone.addEventListener('drop',e=>{deliver([...(e.dataTransfer?.files||[])]);});
 }
-function previewKnowledgeMedia(file){
+function previewKnowledgeMedia(files){
   const root=$('knowledgeMediaPreview');
-  if(!file){root.classList.add('hidden');root.innerHTML='';return;}
+  if(!files?.length){root.classList.add('hidden');root.innerHTML='';return;}
   root.classList.remove('hidden');
-  const kind=file.type.startsWith('audio/')?'Audio':'Video';
-  root.innerHTML='<strong>'+esc(file.name)+'</strong><small>'+kind+' · '+formatBytes(file.size)+'</small><span>Will become a permanent timestamped reference source.</span>';
+  root.innerHTML='<strong>'+files.length+' media file'+(files.length===1?'':'s')+' ready to scan</strong>'+
+    files.slice(0,8).map(file=>'<small>'+esc(file.name)+' · '+formatBytes(file.size)+'</small>').join('')+
+    '<span>Keep this page open until the uploads finish. Processing continues in the background afterward.</span>';
 }
 async function ingestKnowledgeMedia(){
-  if(!state.activeId){toast('Send one message first so this chat exists, then add media Knowledge.',4500);return;}
-  const file=$('knowledgeMediaFile').files?.[0];
-  if(!file){toast('Choose a video or audio file first.');return;}
+  const conversationId=state.activeId;
+  if(!conversationId){toast('Open a chat first to add Knowledge.',4500);return;}
+  const files=[...(state.knowledgeMediaFiles||[])];
+  const mode=$('knowledgeMediaMode').value;
+  if(!files.length){toast('Choose video or audio files first.');return;}
+  if(files.length>10){toast('Upload up to 10 media files per batch.',4500);return;}
+  let processed=0;
+  for(let i=0;i<files.length;i++){
+    $('ingestProgress').classList.remove('hidden');
+    $('ingestProgressText').textContent='Uploading media '+(i+1)+' / '+files.length+': '+files[i].name;
+    await ingestKnowledgeMediaOne(files[i],conversationId,mode);
+    processed++;
+    $('ingestProgressBar').style.width=Math.round(processed/files.length*100)+'%';
+  }
+  state.knowledgeMediaFiles=[];
+  $('knowledgeMediaFile').value='';
+  setFilePickerLabel('knowledgeMediaFile','knowledgeMediaFileLabel');
+  previewKnowledgeMedia([]);
+  $('ingestProgressText').textContent=processed+' media files checked · background indexing continues.';
+  if(state.activeId===conversationId)switchKnowledgeTab('library');
+}
+async function ingestKnowledgeMediaOne(file,conversationId,mode){
+  if(!conversationId){toast('Send one message first so this chat exists, then add media Knowledge.',4500);return;}
   if(file.size>100*1024*1024){toast('This upload is over the current 100 MB video limit.',4500);return;}
   if(file.type.startsWith('audio/')&&file.size>16*1024*1024){toast('Audio Knowledge is currently limited to 16 MB per file. Compress or split larger audio first.',5000);return;}
+  if(file.type.startsWith('video/')&&file.size>16*1024*1024&&mode==='transcript'){
+    toast('Transcript-only mode requires a video under 16 MB. Choose Full analysis for larger videos or upload a transcript file.',6000);return;
+  }
   const btn=$('saveKnowledgeMedia');btn.disabled=true;
   let uploadedPath='',serverHandoffStarted=false;
   const [row]=stageKnowledgeFiles([file]);$('ingestProgress').classList.remove('hidden');
@@ -878,7 +904,7 @@ async function ingestKnowledgeMedia(){
     const sha=await sha256File(file);row.sha256=sha;
     setKnowledgeFileStatus(row,'checking',7,'Checking for an identical source','duplicate check');
     const check=await api('/api/knowledge/file-check',{method:'POST',body:JSON.stringify({sha256:sha,name:file.name,size:file.size})});
-    if(check.duplicate){await api('/api/knowledge/'+encodeURIComponent(check.source.id)+'/attach',{method:'POST',body:JSON.stringify({conversation_id:state.activeId})});row.sourceIds=[check.source.id];setKnowledgeFileStatus(row,'ready',100,'Existing source attached to this chat','attached');state.knowledgeScope='chat';await loadKnowledge();toast('Existing media source attached to this chat.');return;}
+    if(check.duplicate){await api('/api/knowledge/'+encodeURIComponent(check.source.id)+'/attach',{method:'POST',body:JSON.stringify({conversation_id:conversationId})});row.sourceIds=[check.source.id];setKnowledgeFileStatus(row,'ready',100,'Existing source attached to this chat','attached');if(state.activeId===conversationId){state.knowledgeScope='chat';await loadKnowledge();}toast('Existing media source attached to this chat.');return;}
 
     setKnowledgeFileStatus(row,'uploading',10,'Uploading into private Storage','uploading 0%');
     const signed=await api('/api/uploads/sign',{method:'POST',body:JSON.stringify({name:file.name,mime:file.type||'application/octet-stream',size:file.size,kind:file.type.startsWith('audio/')?'audio':'video'})});
@@ -891,7 +917,7 @@ async function ingestKnowledgeMedia(){
     serverHandoffStarted=true;
     const created=await api('/api/knowledge/media',{method:'POST',body:JSON.stringify({
       title:file.name,path:signed.path,mime:file.type||'video/mp4',size:file.size,sha256:sha,
-      mode:$('knowledgeMediaMode').value,collection:$('knowledgeCollection').value.trim().slice(0,80),conversation_id:state.activeId
+      mode,collection:$('knowledgeCollection').value.trim().slice(0,80),conversation_id:conversationId
     })});
     if(created.duplicate){
       await api('/api/uploads/discard',{method:'POST',body:JSON.stringify({path:signed.path})}).catch(()=>{});
@@ -899,15 +925,63 @@ async function ingestKnowledgeMedia(){
     }
     row.sourceIds=[created.source_id];
     setKnowledgeFileStatus(row,'processing',52,'Safe to close this browser — processing continues on the server','processing');
-    $('knowledgeMediaFile').value='';setFilePickerLabel('knowledgeMediaFile','knowledgeMediaFileLabel');previewKnowledgeMedia(null);
-    await loadKnowledge();switchKnowledgeTab('library');toast('Media uploaded. Building timestamped Knowledge in the background.',4500);
+    if(state.activeId===conversationId)await loadKnowledge();toast('Media uploaded. Building timestamped Knowledge in the background.',4500);
   }catch(e){
     if(uploadedPath&&!serverHandoffStarted)await api('/api/uploads/discard',{method:'POST',body:JSON.stringify({path:uploadedPath})}).catch(()=>{});
     setKnowledgeFileStatus(row,'failed',100,e.message||'Media upload failed','failed');toast(e.message||'Media upload failed',4500);
-  }finally{btn.disabled=false;scheduleKnowledgePoll();}
+  }finally{delete row.file;btn.disabled=false;scheduleKnowledgePoll();}
 }
 
 let pdfjsKnowledgePromise=null;
+let tesseractKnowledgePromise=null;
+const PDF_OCR_MIN_CHARS=220;
+const PDF_OCR_MIN_WORDS=35;
+function needsPdfOcr(text){
+  const clean=String(text||'').replace(/\s+/g,' ').trim();
+  const words=clean.match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/gu)||[];
+  return clean.length<PDF_OCR_MIN_CHARS||words.length<PDF_OCR_MIN_WORDS;
+}
+async function loadKnowledgeOcr(){
+  if(!tesseractKnowledgePromise){
+    tesseractKnowledgePromise=new Promise((resolve,reject)=>{
+      if(globalThis.Tesseract?.createWorker){resolve(globalThis.Tesseract);return;}
+      const tag=document.createElement('script');
+      let done=false;
+      const finish=(err,api)=>{
+        if(done)return;
+        done=true;clearTimeout(timer);
+        if(err)reject(err);else resolve(api);
+      };
+      const timer=setTimeout(()=>finish(new Error('OCR download timed out. Check your connection and try again.')),30000);
+      tag.async=true;
+      tag.src='https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/tesseract.min.js';
+      tag.onload=()=>globalThis.Tesseract?.createWorker
+        ?finish(null,globalThis.Tesseract)
+        :finish(new Error('The OCR reader did not initialize correctly.'));
+      tag.onerror=()=>finish(new Error('OCR could not load. Check your connection and try again.'));
+      document.head.append(tag);
+    }).catch(e=>{tesseractKnowledgePromise=null;throw e;});
+  }
+  return tesseractKnowledgePromise;
+}
+async function recognizePdfPage(page,worker){
+  const original=page.getViewport({scale:1});
+  const scale=Math.max(1.2,Math.min(2,1800/original.width,2200/original.height));
+  const viewport=page.getViewport({scale});
+  const canvas=document.createElement('canvas');
+  canvas.width=Math.ceil(viewport.width);
+  canvas.height=Math.ceil(viewport.height);
+  try{
+    const context=canvas.getContext('2d',{alpha:false,willReadFrequently:true});
+    if(!context)throw new Error('Your browser could not render this PDF page for OCR.');
+    await page.render({canvasContext:context,viewport}).promise;
+    const result=await worker.recognize(canvas);
+    return String(result?.data?.text||'').replace(/\r\n/g,'\n').replace(/[ \t]+\n/g,'\n').replace(/\n{4,}/g,'\n\n\n').trim();
+  }finally{
+    // Rendering one page at a time keeps large screenshot PDFs usable on phones.
+    canvas.width=0;canvas.height=0;
+  }
+}
 async function loadPdfJs(){
   if(!pdfjsKnowledgePromise){
     pdfjsKnowledgePromise=Promise.race([
@@ -921,36 +995,86 @@ async function loadPdfJs(){
 async function extractKnowledgePdf(file,onProgress){
   const pdfjs=await loadPdfJs();
   pdfjs.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
-  let document;
-  try{document=await pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer()),useSystemFonts:true}).promise;}
+  let pdfDoc;
+  try{pdfDoc=await pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer()),useSystemFonts:true}).promise;}
   catch(e){
     const msg=String(e?.message||e||'');
     if(/password/i.test(msg))throw new Error('This PDF is password-protected. Remove the password and upload it again.');
     throw new Error('This PDF could not be opened. It may be damaged or use an unsupported format.');
   }
-  const pages=[];
+  const pages=[],stats={pages:pdfDoc.numPages,ocrPages:0,selectablePages:0,readablePages:0,unreadablePages:[],weakOcrPages:[],words:0};
+  let ocrWorker=null;
   try{
-    for(let n=1;n<=document.numPages;n++){
-      const page=await document.getPage(n);
-      const content=await page.getTextContent();
-      let text='',lastY=null;
-      for(const item of content.items){
-        if(typeof item.str!=='string')continue;
-        const y=item.transform?.[5];
-        if(lastY!==null&&y!==undefined&&Math.abs(y-lastY)>3)text+='\n';
-        text+=item.str+(item.hasEOL?'\n':' ');
-        if(y!==undefined)lastY=y;
+    for(let n=1;n<=pdfDoc.numPages;n++){
+      const page=await pdfDoc.getPage(n);
+      try{
+        const content=await page.getTextContent();
+        let extracted='',lastY=null;
+        for(const item of content.items){
+          if(typeof item.str!=='string')continue;
+          const y=item.transform?.[5];
+          if(lastY!==null&&y!==undefined&&Math.abs(y-lastY)>3)extracted+='\n';
+          extracted+=item.str+(item.hasEOL?'\n':' ');
+          if(y!==undefined)lastY=y;
+        }
+        let text=extracted.trim(),method='text';
+        let containsImage=false;
+        if(needsPdfOcr(text)){
+          const operators=await page.getOperatorList();
+          const imageOps=new Set([
+            pdfjs.OPS.paintImageXObject,pdfjs.OPS.paintJpegXObject,
+            pdfjs.OPS.paintInlineImageXObject,pdfjs.OPS.paintImageXObjectRepeat,
+            pdfjs.OPS.paintImageMaskXObject
+          ]);
+          containsImage=operators.fnArray.some(op=>imageOps.has(op));
+        }
+        if(needsPdfOcr(text)&&(containsImage||!text)){
+          if(onProgress)onProgress(n,pdfDoc.numPages,'ocr-loading',stats);
+          if(!ocrWorker){
+            const reader=await loadKnowledgeOcr();
+            try{ocrWorker=await reader.createWorker('eng',1);}
+            catch(e){throw new Error('OCR initialization failed. '+String(e?.message||e));}
+          }
+          if(onProgress)onProgress(n,pdfDoc.numPages,'ocr',stats);
+          const recognized=await recognizePdfPage(page,ocrWorker);
+          if(containsImage&&recognized.length<Math.max(45,text.length*1.1))stats.weakOcrPages.push(n);
+          // The selectable layer often contains only the screenshot's heading.
+          if(recognized.length>text.length*1.25||!text){
+            text=recognized;
+            method='ocr';
+          }else if(recognized&&!text.includes(recognized)&&recognized.length>80){
+            text+='\n'+recognized;
+            method='text+ocr';
+          }
+          stats.ocrPages++;
+        }else stats.selectablePages++;
+        if(text.replace(/[^\p{L}\p{N}]/gu,'').length>=12)stats.readablePages++;
+        else stats.unreadablePages.push(n);
+        stats.words+=(text.match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/gu)||[]).length;
+        pages.push('[PDF page '+n+' | '+method+']\n'+text);
+        if(onProgress)onProgress(n,pdfDoc.numPages,'complete',stats);
+      }finally{
+        try{page.cleanup();}catch{}
       }
-      pages.push('[PDF page '+n+']\n'+text.trim());
-      if(onProgress)onProgress(n,document.numPages);
+      // Give the browser a chance to paint progress on long PDFs.
+      if(n%3===0)await new Promise(resolve=>setTimeout(resolve,0));
     }
-  }finally{try{await document.destroy();}catch{}}
+  }finally{
+    if(ocrWorker)try{await ocrWorker.terminate();}catch{}
+    try{await pdfDoc.destroy();}catch{}
+  }
   const result=pages.join('\n\n');
-  if(result.replace(/\[PDF page \d+\]/g,'').trim().length<20)throw new Error('This PDF appears to be scanned/image-only and has no selectable text. Text PDFs work now; scanned-PDF OCR is not enabled yet.');
-  return result;
+  if(stats.words<20||stats.readablePages<Math.max(1,Math.ceil(stats.pages*.75))){
+    throw new Error('PDF scanning could not read enough pages ('+stats.readablePages+'/'+stats.pages+'). No incomplete Knowledge was saved.');
+  }
+  if(stats.ocrPages>=4&&stats.weakOcrPages.length>Math.max(2,Math.floor(stats.ocrPages*.25))){
+    throw new Error('OCR could not reliably read '+stats.weakOcrPages.length+' screenshot pages. Try a higher-quality PDF. No incomplete Knowledge was saved.');
+  }
+  return {text:result,stats};
 }
 async function ingestFileKnowledge(){
   if(!state.activeId){toast('Send one message first so this chat exists, then add file Knowledge.',4500);return;}
+  const conversationId=state.activeId;
   const rowsToProcess=(state.knowledgeFileUploads||[]).filter(r=>r.status==='selected'&&r.file);
   const files=rowsToProcess.map(r=>r.file);
   if(!files.length){toast('Stage one or more PDF or text files first.');return;}
@@ -973,17 +1097,23 @@ async function ingestFileKnowledge(){
         const check=await api('/api/knowledge/file-check',{method:'POST',body:JSON.stringify({sha256:fileSha256,name:file.name,size:file.size})});
         if(check.duplicate){
           duplicates++;
-          await api('/api/knowledge/'+encodeURIComponent(check.source.id)+'/attach',{method:'POST',body:JSON.stringify({conversation_id:state.activeId})});
+          await api('/api/knowledge/'+encodeURIComponent(check.source.id)+'/attach',{method:'POST',body:JSON.stringify({conversation_id:conversationId})});
           row.sourceIds=[check.source.id];
           setKnowledgeFileStatus(row,'ready',100,'Existing source attached to this chat','attached');
           continue;
         }
 
         const html=/\.html?$/i.test(file.name); const pdf=/\.pdf$/i.test(file.name)||file.type==='application/pdf';
-        let cleanedText=null;
+        let cleanedText=null,pdfStats=null;
         if(pdf){
-          setKnowledgeFileStatus(row,'reading',20,'Extracting PDF pages','reading PDF');
-          cleanedText=await extractKnowledgePdf(file,(page,total)=>setKnowledgeFileStatus(row,'reading',20+Math.round(page/total*5),'Reading page '+page+' / '+total,'reading PDF'));
+          setKnowledgeFileStatus(row,'scanning',20,'Reading PDF · screenshot pages use OCR automatically','scanning PDF');
+          const scanned=await extractKnowledgePdf(file,(page,total,stage,stats)=>{
+            const progress=20+Math.round(page/total*35);
+            const label=stage==='ocr-loading'?'Preparing local OCR':stage==='ocr'?'Scanning screenshot': 'Finished page';
+            setKnowledgeFileStatus(row,'scanning',progress,label+' '+page+' / '+total+' · '+stats.ocrPages+' OCR · '+stats.words.toLocaleString()+' words','scanning PDF');
+          });
+          cleanedText=scanned.text;pdfStats=scanned.stats;
+          setKnowledgeFileStatus(row,'scanning',55,'Read '+pdfStats.pages+' pages · '+pdfStats.ocrPages+' OCR · '+pdfStats.words.toLocaleString()+' words','text extracted');
         }else if(html&&file.size<=25*1024*1024){
           setKnowledgeFileStatus(row,'cleaning',20,'Removing saved-page code, images, CSS, and scripts','cleaning HTML');
           cleanedText=cleanHtmlClient(await file.text());
@@ -1004,9 +1134,11 @@ async function ingestFileKnowledge(){
             title:file.name,text,type:'file',
             metadata:{
               file_group:group,file_name:file.name,file_size:file.size,file_sha256:fileSha256,
-              part:part+1,parts,cleaned_html:html&&cleanedText!==null,pdf_extracted:pdf
+              part:part+1,parts,cleaned_html:html&&cleanedText!==null,pdf_extracted:pdf,
+              ...(pdfStats?{pdf_pages:pdfStats.pages,pdf_ocr_pages:pdfStats.ocrPages,
+                pdf_readable_pages:pdfStats.readablePages,pdf_words:pdfStats.words,ocr_engine:pdfStats.ocrPages?'tesseract-v6':'not-needed'}:{})
             }
-          });
+          },conversationId);
           if(r.duplicate){
             duplicates++;duplicateDuringAdd=true;
             setKnowledgeFileStatus(row,'duplicate',100,'An identical file already exists in Knowledge','duplicate blocked');
@@ -1019,7 +1151,7 @@ async function ingestFileKnowledge(){
           if(row.sourceIds.length)await Promise.all(row.sourceIds.map(id=>api('/api/knowledge/'+encodeURIComponent(id),{method:'DELETE'}).catch(()=>{})));
           row.sourceIds=[];continue;
         }
-        setKnowledgeFileStatus(row,'indexing',70,fileChunks+' chunks queued','indexing');
+        setKnowledgeFileStatus(row,'indexing',70,(pdfStats?pdfStats.words.toLocaleString()+' words extracted · ':'')+fileChunks+' chunks queued','indexing');
       }catch(e){
         if(row.sourceIds.length)await Promise.all(row.sourceIds.map(id=>api('/api/knowledge/'+encodeURIComponent(id),{method:'DELETE'}).catch(()=>{})));
         row.sourceIds=[];failed++;console.error('Knowledge file failed',file.name,e);
@@ -1095,7 +1227,7 @@ $('videoInput').onchange=e=>addFiles(e.target.files);
 $('addWebsiteAttachment').onclick=addWebsiteAttachment;
 $('websiteUrlInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();addWebsiteAttachment();}};
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));document.querySelectorAll('.modal').forEach(m=>m.onclick=e=>{if(e.target===m)closeModal(m.id);});
-$('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeGlobalTab').onclick=()=>switchKnowledgeTab('global');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('useGlobalKnowledgeToggle').onchange=e=>setUseGlobalKnowledge(e.target.checked);$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;bindFileDropzone('knowledgeFile','knowledgeFileDropzone','knowledgeTextFileLabel',files=>stageTextKnowledgeFiles(files));$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('knowledgeSelectAll').onchange=e=>toggleAllVisibleKnowledge(e.target.checked);$('bulkMoveKnowledge').onclick=openBulkMoveKnowledge;$('clearKnowledgeSelection').onclick=()=>clearKnowledgeSelection();bindFileDropzone('knowledgeMediaFile','knowledgeMediaDropzone','knowledgeMediaFileLabel',files=>previewKnowledgeMedia(files[0]||null));$('saveKnowledgeMedia').onclick=ingestKnowledgeMedia;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
+$('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeGlobalTab').onclick=()=>switchKnowledgeTab('global');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('useGlobalKnowledgeToggle').onchange=e=>setUseGlobalKnowledge(e.target.checked);$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;bindFileDropzone('knowledgeFile','knowledgeFileDropzone','knowledgeTextFileLabel',files=>stageTextKnowledgeFiles(files));$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('knowledgeSelectAll').onchange=e=>toggleAllVisibleKnowledge(e.target.checked);$('bulkMoveKnowledge').onclick=openBulkMoveKnowledge;$('clearKnowledgeSelection').onclick=()=>clearKnowledgeSelection();bindFileDropzone('knowledgeMediaFile','knowledgeMediaDropzone','knowledgeMediaFileLabel',files=>{state.knowledgeMediaFiles=files.slice(0,10);previewKnowledgeMedia(state.knowledgeMediaFiles);});$('saveKnowledgeMedia').onclick=ingestKnowledgeMedia;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
 $('webToggle').onclick=()=>{state.webResearch=!state.webResearch;localStorage.setItem('uncensor.webResearch',String(state.webResearch));syncSettings();if(state.webResearch&&!state.webResearchEnabled)toast('Web Research is temporarily unavailable.',4500);};$('knowledgeToggle').onclick=()=>{state.knowledgeEnabled=!state.knowledgeEnabled;localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));syncSettings();};
 $('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);$('runDiagnostics').onclick=()=>runDiagnostics(true);$('exportFullBackup').onclick=exportFullBackup;$('saveRenameChat').onclick=saveChatRename;$('cancelRenameChat').onclick=()=>closeModal('renameChatModal');$('renameChatInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();saveChatRename();}};$('confirmMoveKnowledge').onclick=confirmMoveKnowledge;$('cancelMoveKnowledge').onclick=()=>closeModal('moveKnowledgeModal');$('revokeThisDevice').onclick=revokeCurrentDevice;$('generatePairingCode').onclick=generatePairingCode;$('redeemPairingCode').onclick=redeemPairingCode;$('pairingCodeInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();redeemPairingCode();}};$('rotateRecoveryKey').onclick=rotateRecoveryKeyFromDevice;$('copyRecoveryKey').onclick=()=>{const v=$('recoveryKeyValue').textContent||'';if(v){navigator.clipboard.writeText(v);toast('Recovery key copied');}};
 $('saveSettings').onclick=async()=>{state.knowledgeEnabled=$('settingKnowledge').checked;state.showSources=$('settingSources').checked;state.mode=$('responseMode').value;state.style=$('stylePrompt').value.trim()||DEFAULT_STYLE;const k=$('accessKeyInput').value.trim();if(k)localStorage.setItem('uncensor.accessKey',k);localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));localStorage.setItem('uncensor.sources',String(state.showSources));localStorage.setItem('uncensor.mode',state.mode);localStorage.setItem('uncensor.style',state.style);try{if(accessKey())await enrollDeviceSession();syncSettings();closeModal('settingsModal');renderMessages();toast(sessionToken()?'Settings saved · device enrolled':'Settings saved');if(hasPrivateAuth()){await loadChats();const remembered=localStorage.getItem('uncensor.activeChatId');if(!state.activeId&&remembered&&state.conversations.some(c=>c.id===remembered))await openChat(remembered);await Promise.all([loadKnowledge(),loadMemories(),status(),health()]);}}catch(e){localStorage.removeItem('uncensor.accessKey');syncSettings();toast((e.message||'Could not enroll device')+' Use a one-time link code from your enrolled phone if needed.',5500);}};

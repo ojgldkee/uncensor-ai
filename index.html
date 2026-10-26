@@ -16,7 +16,7 @@
     #app{min-height:100dvh}
   </style>
   <link rel="manifest" href="./manifest.webmanifest?v=27" />
-  <link rel="stylesheet" href="./styles.css?v=30" />
+  <link rel="stylesheet" href="./styles.css?v=31" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -235,35 +235,35 @@
           <div class="knowledge-add-card knowledge-media-card">
             <div class="knowledge-add-card-icon">▶</div>
             <h3>Video / audio reference</h3>
-            <p>Turn courses, screen recordings, webinars, podcasts, and ad-training videos into permanent timestamped Knowledge.</p>
-            <input id="knowledgeMediaFile" class="native-file-input" type="file" accept="video/*,audio/*,.mp4,.mov,.m4v,.webm,.mp3,.m4a,.wav,.aac,.ogg" />
+            <p>Scan several courses, screen recordings, webinars, podcasts, or ad-training videos at once into timestamped Knowledge.</p>
+            <input id="knowledgeMediaFile" class="native-file-input" type="file" multiple accept="video/*,audio/*,.mp4,.mov,.m4v,.webm,.mp3,.m4a,.wav,.aac,.ogg" />
             <label id="knowledgeMediaDropzone" for="knowledgeMediaFile" class="upload-dropzone">
               <span class="upload-dropzone-icon">↑</span>
-              <span><strong>Choose video or audio</strong><small id="knowledgeMediaFileLabel">or drag & drop it here · video up to 100 MB · audio up to 16 MB</small></span>
+              <span><strong>Choose multiple videos or audio files</strong><small id="knowledgeMediaFileLabel">Up to 10 per batch · 100 MB/video · 16 MB/audio</small></span>
             </label>
             <label class="media-mode-label">Processing mode
               <select id="knowledgeMediaMode">
-                <option value="full">Transcript + visual analysis</option>
+                <option value="full">Full analysis (spoken + visuals where supported)</option>
                 <option value="transcript">Transcript / spoken content only</option>
               </select>
             </label>
             <div id="knowledgeMediaPreview" class="media-upload-preview hidden"></div>
-            <small>Maximum-privacy default: the raw media is kept only long enough to process it, then automatically deleted. The encrypted timestamped Knowledge remains. Exact duplicates are blocked. Videos can be up to 100 MB; audio is currently limited to 16 MB.</small>
-            <button id="saveKnowledgeMedia" class="primary-btn">Add media to Knowledge</button>
+            <small>Video up to 100 MB; audio up to 16 MB. Dedicated transcription runs only for files up to 16 MB. Larger videos in Full mode get visual analysis, which may miss spoken words. For long courses, add an SRT/VTT/TXT transcript in Documents too. Raw media is deleted after processing; timestamped Knowledge remains.</small>
+            <button id="saveKnowledgeMedia" class="primary-btn">Scan videos into Knowledge</button>
           </div>
 
           <div class="knowledge-add-card">
             <div class="knowledge-add-card-icon">▤</div>
             <h3>Documents & text files</h3>
-            <p>Add PDFs plus text, Markdown, CSV, JSON, HTML, or code files. Select as many as you want before uploading.</p>
-            <input id="knowledgeFile" class="native-file-input" type="file" multiple accept=".pdf,.txt,.md,.csv,.json,.html,.htm,.log,.js,.ts,.tsx,.jsx,.py,.sql,.css,text/*,application/json,application/pdf" />
+            <p>Add scanned PDFs, screenshot discussions, transcripts, CSV, HTML, or code files. PDF screenshots are automatically read with OCR.</p>
+            <input id="knowledgeFile" class="native-file-input" type="file" multiple accept=".pdf,.txt,.md,.csv,.json,.html,.htm,.log,.srt,.vtt,.js,.ts,.tsx,.jsx,.py,.sql,.css,text/*,application/json,application/pdf" />
             <label id="knowledgeFileDropzone" for="knowledgeFile" class="upload-dropzone">
               <span class="upload-dropzone-icon">↑</span>
               <span><strong>Choose multiple files</strong><small id="knowledgeTextFileLabel">Select several at once, then choose more anytime · drag & drop works too</small></span>
             </label>
             <div class="multi-file-help"><span>✓ Multi-select enabled</span><span>✓ New picks are added, not replaced</span><span>✓ Remove individual files before upload</span></div>
-            <small>Exact duplicates are blocked with SHA-256. Text-based PDFs are extracted page by page with page markers; large text/HTML/code files are cleaned and segmented automatically. Up to 100 MB per file.</small>
-            <button id="saveKnowledgeFiles" class="primary-btn">Upload all staged files</button>
+            <small>PDF pages with screenshot text are scanned with local OCR at no AI-OCR credit charge, then checked for readable content. Keep this tab open during OCR; server Knowledge indexing continues afterward. Up to 100 MB per file. Exact duplicates are blocked.</small>
+            <button id="saveKnowledgeFiles" class="primary-btn">Scan & upload staged files</button>
           </div>
         </div>
 
@@ -378,6 +378,6 @@
 
   <div id="toast" class="toast hidden"></div>
   <script src="./config.js?v=27"></script>
-  <script src="./app.js?v=33" defer></script>
+  <script src="./app.js?v=34" defer></script>
 </body>
 </html>
