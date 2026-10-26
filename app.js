@@ -763,7 +763,7 @@ async function ingestKnowledgeMedia(){
   if(file.size>100*1024*1024){toast('This upload is over the current 100 MB video limit.',4500);return;}
   if(file.type.startsWith('audio/')&&file.size>16*1024*1024){toast('Audio Knowledge is currently limited to 16 MB per file. Compress or split larger audio first.',5000);return;}
   const btn=$('saveKnowledgeMedia');btn.disabled=true;
-  let uploadedPath='';
+  let uploadedPath='',serverHandoffStarted=false;
   const [row]=stageKnowledgeFiles([file]);$('ingestProgress').classList.remove('hidden');
   try{
     setKnowledgeFileStatus(row,'fingerprinting',3,'Computing exact SHA-256','checking');
@@ -780,6 +780,7 @@ async function ingestKnowledgeMedia(){
     });
 
     setKnowledgeFileStatus(row,'queued',48,'Starting private media processing','queued');
+    serverHandoffStarted=true;
     const created=await api('/api/knowledge/media',{method:'POST',body:JSON.stringify({
       title:file.name,path:signed.path,mime:file.type||'video/mp4',size:file.size,sha256:sha,
       mode:$('knowledgeMediaMode').value,collection:$('knowledgeCollection').value.trim().slice(0,80),conversation_id:state.activeId
@@ -793,7 +794,7 @@ async function ingestKnowledgeMedia(){
     $('knowledgeMediaFile').value='';setFilePickerLabel('knowledgeMediaFile','knowledgeMediaFileLabel');previewKnowledgeMedia(null);
     await loadKnowledge();switchKnowledgeTab('library');toast('Media uploaded. Building timestamped Knowledge in the background.',4500);
   }catch(e){
-    if(uploadedPath)await api('/api/uploads/discard',{method:'POST',body:JSON.stringify({path:uploadedPath})}).catch(()=>{});
+    if(uploadedPath&&!serverHandoffStarted)await api('/api/uploads/discard',{method:'POST',body:JSON.stringify({path:uploadedPath})}).catch(()=>{});
     setKnowledgeFileStatus(row,'failed',100,e.message||'Media upload failed','failed');toast(e.message||'Media upload failed',4500);
   }finally{btn.disabled=false;scheduleKnowledgePoll();}
 }
