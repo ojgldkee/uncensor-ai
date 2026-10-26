@@ -1637,3 +1637,59 @@ where global_enabled=false
     select 1 from public.private_ai_chat_knowledge ck
     where ck.source_id=s.id
   );
+
+
+-- v27: per-chat Knowledge focus. Specialist chats default to chat-only retrieval.
+create table if not exists public.private_ai_conversation_settings (
+  conversation_id uuid primary key references public.private_ai_conversations(id) on delete cascade,
+  use_global_knowledge boolean not null default false,
+  updated_at timestamptz not null default now()
+);
+alter table public.private_ai_conversation_settings enable row level security;
+revoke all on table public.private_ai_conversation_settings from anon,authenticated;
+grant select,insert,update,delete on table public.private_ai_conversation_settings to service_role;
+
+insert into public.private_ai_conversation_settings(conversation_id,use_global_knowledge)
+select id,false from public.private_ai_conversations
+on conflict (conversation_id) do nothing;
+
+create or replace function public.private_ai_match_chunks_scoped(
+  query_embedding extensions.vector(384),
+  target_conversation_id uuid,
+  include_global boolean default false,
+  match_count integer default 10,
+  similarity_threshold double precision default 0.25
+)
+returns table (
+  id bigint,
+  source_id uuid,
+  title text,
+  content text,
+  chunk_index integer,
+  similarity double precision
+)
+language sql stable
+set search_path=''
+as $$
+  select distinct c.id,c.source_id,
+         public.private_ai_decrypt_text(s.title) as title,
+         public.private_ai_decrypt_text(c.content) as content,
+         c.chunk_index,
+         1-(c.embedding OPERATOR(extensions.<=>) query_embedding) as similarity
+  from public.private_ai_knowledge_chunks c
+  join public.private_ai_knowledge_sources s on s.id=c.source_id
+  left join public.private_ai_chat_knowledge ck
+    on ck.source_id=s.id and ck.conversation_id=target_conversation_id
+  where (
+      ck.conversation_id=target_conversation_id
+      or (include_global=true and s.global_enabled=true)
+    )
+    and s.status='ready'
+    and s.enabled=true
+    and c.embedding is not null
+    and 1-(c.embedding OPERATOR(extensions.<=>) query_embedding)>=similarity_threshold
+  order by similarity desc
+  limit greatest(1,least(match_count,30));
+$$;
+revoke all on function public.private_ai_match_chunks_scoped(extensions.vector,uuid,boolean,integer,double precision) from public,anon,authenticated;
+grant execute on function public.private_ai_match_chunks_scoped(extensions.vector,uuid,boolean,integer,double precision) to service_role;
