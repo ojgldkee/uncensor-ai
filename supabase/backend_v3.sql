@@ -1558,3 +1558,71 @@ revoke all on function public.private_ai_match_chunks_for_chat(extensions.vector
 grant execute on function public.private_ai_match_chunks_for_chat(extensions.vector,uuid,integer,double precision) to service_role;
 
 create index if not exists private_ai_pairing_codes_created_by_session_idx on public.private_ai_pairing_codes(created_by_session);
+
+
+-- Global Knowledge scope. Global sources are available to every chat; chat mappings stay specialist.
+alter table public.private_ai_knowledge_sources
+  add column if not exists global_enabled boolean not null default false;
+create index if not exists private_ai_knowledge_global_idx
+  on public.private_ai_knowledge_sources(global_enabled,status,enabled);
+
+create or replace view public.private_ai_knowledge_sources_read
+as
+select
+  id,
+  public.private_ai_decrypt_text(title) as title,
+  source_type,
+  enabled,
+  content_hash,
+  file_sha256,
+  title_hash,
+  file_size_bytes,
+  char_count,
+  chunk_count,
+  embedded_chunk_count,
+  status,
+  failure_count,
+  last_error,
+  public.private_ai_decrypt_json(metadata) as metadata,
+  created_at,
+  updated_at,
+  completed_at,
+  global_enabled
+from public.private_ai_knowledge_sources;
+revoke all on public.private_ai_knowledge_sources_read from public,anon,authenticated;
+grant select on public.private_ai_knowledge_sources_read to service_role;
+
+create or replace function public.private_ai_match_chunks_for_chat(
+  query_embedding extensions.vector(384),
+  target_conversation_id uuid,
+  match_count integer default 10,
+  similarity_threshold double precision default 0.25
+)
+returns table (
+  id bigint,
+  source_id uuid,
+  title text,
+  content text,
+  chunk_index integer,
+  similarity double precision
+)
+language sql stable
+set search_path=''
+as $$
+  select distinct c.id,c.source_id,
+         public.private_ai_decrypt_text(s.title) as title,
+         public.private_ai_decrypt_text(c.content) as content,
+         c.chunk_index,
+         1-(c.embedding OPERATOR(extensions.<=>) query_embedding) as similarity
+  from public.private_ai_knowledge_chunks c
+  join public.private_ai_knowledge_sources s on s.id=c.source_id
+  left join public.private_ai_chat_knowledge ck
+    on ck.source_id=s.id and ck.conversation_id=target_conversation_id
+  where (s.global_enabled=true or ck.conversation_id=target_conversation_id)
+    and s.status='ready' and s.enabled=true and c.embedding is not null
+    and 1-(c.embedding OPERATOR(extensions.<=>) query_embedding)>=similarity_threshold
+  order by similarity desc
+  limit greatest(1,least(match_count,30));
+$$;
+revoke all on function public.private_ai_match_chunks_for_chat(extensions.vector,uuid,integer,double precision) from public,anon,authenticated;
+grant execute on function public.private_ai_match_chunks_for_chat(extensions.vector,uuid,integer,double precision) to service_role;
