@@ -380,9 +380,10 @@ async function processMemories(job: QueueJob) {
 
   const memories = Array.isArray(result.memories) ? result.memories.slice(0, 10) : []
   for (const m of memories) {
-    const key = String(m?.memory_key || '').toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 120)
+    const rawKey = String(m?.memory_key || '').toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 120)
     const content = String(m?.content || '').trim().slice(0, 4000)
-    if (!key || !content) continue
+    if (!rawKey || !content) continue
+    const key = await contentHash(rawKey)
     const vector = await embedding(content)
     const latestUserMessage = [...rows].reverse().find((r: any) => r.role === 'user')
     const row = {
