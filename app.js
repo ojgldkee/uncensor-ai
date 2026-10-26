@@ -1,6 +1,6 @@
 const $=id=>document.getElementById(id);
 const DEFAULT_STYLE='Be direct, specific, intellectually curious, and nonjudgmental. Do not avoid a topic merely because it is controversial, sensitive, adult, or unconventional. Correct false premises, distinguish facts from uncertainty, and give useful specifics. If the exact request cannot be fulfilled, give the closest useful answer instead of boilerplate.';
-const state={conversations:[],activeId:null,activeConversation:null,messages:[],knowledge:[],knowledgeScope:'chat',memories:[],pendingAttachments:[],knowledgeFileUploads:[],knowledgePollTimer:null,webResearch:localStorage.getItem('uncensor.webResearch')==='true',webResearchEnabled:false,sending:false,abort:null,knowledgeEnabled:localStorage.getItem('uncensor.knowledge')!=='false',showSources:localStorage.getItem('uncensor.sources')!=='false',mode:localStorage.getItem('uncensor.mode')||'direct',style:localStorage.getItem('uncensor.style')||DEFAULT_STYLE};
+const state={conversations:[],activeId:null,activeConversation:null,messages:[],knowledge:[],knowledgeScope:'chat',moveKnowledgeSource:null,renameChatTarget:null,memories:[],pendingAttachments:[],knowledgeFileUploads:[],knowledgePollTimer:null,webResearch:localStorage.getItem('uncensor.webResearch')==='true',webResearchEnabled:false,sending:false,abort:null,knowledgeEnabled:localStorage.getItem('uncensor.knowledge')!=='false',showSources:localStorage.getItem('uncensor.sources')!=='false',mode:localStorage.getItem('uncensor.mode')||'direct',style:localStorage.getItem('uncensor.style')||DEFAULT_STYLE};
 
 function esc(v){return String(v||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
 function md(v){let s=esc(v);s=s.replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h1>$1</h1>');s=s.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>');return s.split(/\n{2,}/).map(p=>/^<h\d/.test(p)?p:'<p>'+p.replace(/\n/g,'<br>')+'</p>').join('');}
@@ -128,7 +128,24 @@ function renderConversations(){const root=$('conversationList');root.innerHTML='
 async function loadChats(){try{const d=await api('/api/conversations');state.conversations=d.conversations||[];if(state.activeId)state.activeConversation=state.conversations.find(x=>x.id===state.activeId)||state.activeConversation;renderConversations();header();}catch{state.conversations=[];renderConversations();}}
 async function openChat(id){state.activeId=id;try{const d=await api('/api/conversations/'+encodeURIComponent(id));state.activeConversation=d.conversation;state.messages=d.messages||[];renderMessages();renderConversations();header();syncKnowledgeScopeUI();if(!$('knowledgeModal').classList.contains('hidden'))loadKnowledge();closeSidebar();}catch(e){toast(e.message);}}
 async function patchChat(id,p){try{await api('/api/conversations/'+encodeURIComponent(id),{method:'PATCH',body:JSON.stringify(p)});await loadChats();}catch(e){toast(e.message);}}
-async function renameChat(id=state.activeId,current=activeTitle()){if(!id)return;const n=prompt('Rename this chat',current||'');if(n==null||!n.trim())return;await patchChat(id,{title:n.trim().slice(0,120)});if(id===state.activeId){state.activeConversation=Object.assign({},state.activeConversation||{},{title:n.trim().slice(0,120)});header();}}
+function renameChat(id=state.activeId,current=activeTitle()){
+  if(!id){toast('Send a message first, then you can name the saved chat.',3500);return;}
+  state.renameChatTarget={id,current:current||'New chat'};
+  $('renameChatInput').value=current||'';
+  openModal('renameChatModal');
+  setTimeout(()=>{$('renameChatInput').focus();$('renameChatInput').select();},40);
+}
+async function saveChatRename(){
+  const target=state.renameChatTarget;if(!target)return;
+  const n=$('renameChatInput').value.trim();
+  if(!n){toast('Enter a chat name.');return;}
+  const btn=$('saveRenameChat');btn.disabled=true;
+  try{
+    await patchChat(target.id,{title:n.slice(0,120)});
+    if(target.id===state.activeId){state.activeConversation=Object.assign({},state.activeConversation||{},{title:n.slice(0,120)});header();syncKnowledgeScopeUI();}
+    closeModal('renameChatModal');toast('Chat renamed');
+  }finally{btn.disabled=false;}
+}
 async function deleteChat(id=state.activeId,title=activeTitle()){if(!id)return;if(!confirm('Permanently delete “'+(title||'this chat')+'”?\\n\\nEvery saved message in it will be deleted and this cannot be undone.'))return;try{await api('/api/conversations/'+encodeURIComponent(id),{method:'DELETE'});if(state.activeId===id)newChat(false);await loadChats();toast('Chat permanently deleted');}catch(e){toast(e.message);}}
 function newChat(close=true){if(state.sending&&state.abort)state.abort.abort();clearPendingAttachments();state.activeId=null;state.activeConversation=null;state.messages=[];state.knowledgeScope='chat';renderMessages();renderConversations();header();syncKnowledgeScopeUI();$('input').focus();if(close)closeSidebar();}
 
@@ -263,20 +280,24 @@ function knowledgeLogicalSources(items){
   return out.sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0));
 }
 function syncKnowledgeScopeUI(){
-  const chat=state.knowledgeScope==='chat';
+  const chat=state.knowledgeScope==='chat',global=state.knowledgeScope==='global',unassigned=state.knowledgeScope==='unassigned';
   $('knowledgeLibraryTab').classList.toggle('active',chat);
-  $('knowledgeUnassignedTab').classList.toggle('active',!chat);
+  $('knowledgeGlobalTab').classList.toggle('active',global);
+  $('knowledgeUnassignedTab').classList.toggle('active',unassigned);
   const title=state.activeConversation?.title||'this chat';
   $('knowledgeScopeDescription').textContent=chat
-    ? (state.activeId?'Only "'+title+'" can retrieve these sources. Other chats cannot use them.':'Start or open a chat to give it private Knowledge.')
-    : 'Sources not assigned to any chat yet. Attach them to the current chat when you want to use them.';
-  $('knowledgeSearch').placeholder=chat?"Search this chat's Knowledge…":"Search unassigned Knowledge…";
+    ? (state.activeId?'Only "'+title+'" can retrieve these chat-specific sources. Global sources are also available to it.':'Start or open a chat to give it specialist Knowledge.')
+    : global
+      ? 'Global Knowledge is available to every chat. Move specialist material into a specific chat when you want tighter context.'
+      : 'Unassigned sources are stored safely but are not retrieved by any chat until you move them.';
+  $('knowledgeSearch').placeholder=chat?"Search this chat's Knowledge…":global?"Search Global Knowledge…":"Search unassigned Knowledge…";
   $('knowledgeAddScopeText').textContent=state.activeId
-    ? 'New sources will belong only to "'+title+'". They can be attached to another chat later without duplicating the file.'
+    ? 'New sources will start in "'+title+'". Use Move anytime to send them to Global, another chat, or Unassigned.'
     : 'Send one message first so this chat exists, then add private sources to it.';
 }
 function switchKnowledgeTab(tab){
   if(tab==='unassigned')state.knowledgeScope='unassigned';
+  if(tab==='global')state.knowledgeScope='global';
   if(tab==='library')state.knowledgeScope='chat';
   const library=tab!=='add';
   $('knowledgeLibraryPanel').classList.toggle('hidden',!library);
@@ -285,6 +306,41 @@ function switchKnowledgeTab(tab){
   syncKnowledgeScopeUI();
   if(library){loadKnowledge();setTimeout(()=>$('knowledgeSearch').focus(),40);}
 }
+function openMoveKnowledge(source){
+  state.moveKnowledgeSource=source;
+  $('moveKnowledgeSourceName').textContent='Move “'+String(source.title||'Untitled')+'” to a different Knowledge scope.';
+  const sel=$('moveKnowledgeDestination');sel.innerHTML='';
+  const add=(value,label)=>{const o=document.createElement('option');o.value=value;o.textContent=label;sel.append(o);};
+  add('global','Global · available in every chat');
+  if(state.activeId)add('chat:'+state.activeId,'This chat · '+activeTitle());
+  for(const chat of state.conversations){
+    if(chat.id===state.activeId)continue;
+    add('chat:'+chat.id,'Chat · '+String(chat.title||'New chat'));
+  }
+  add('unassigned','Unassigned · stored but not retrieved');
+  if(state.knowledgeScope==='global')sel.value=state.activeId?'chat:'+state.activeId:'unassigned';
+  else if(state.knowledgeScope==='chat')sel.value='global';
+  else sel.value=state.activeId?'chat:'+state.activeId:'global';
+  openModal('moveKnowledgeModal');
+}
+async function confirmMoveKnowledge(){
+  const source=state.moveKnowledgeSource;if(!source)return;
+  const dest=$('moveKnowledgeDestination').value;
+  const target=dest.startsWith('chat:')?'chat':dest;
+  const conversationId=dest.startsWith('chat:')?dest.slice(5):'';
+  const btn=$('confirmMoveKnowledge');btn.disabled=true;
+  try{
+    await api('/api/knowledge/'+encodeURIComponent(source.id)+'/move',{method:'POST',body:JSON.stringify({target,conversation_id:conversationId})});
+    closeModal('moveKnowledgeModal');
+    if(target==='global')state.knowledgeScope='global';
+    else if(target==='unassigned')state.knowledgeScope='unassigned';
+    else if(conversationId===state.activeId)state.knowledgeScope='chat';
+    await loadKnowledge();syncKnowledgeScopeUI();
+    toast(target==='global'?'Moved to Global Knowledge':target==='unassigned'?'Moved to Unassigned':'Moved to '+($('moveKnowledgeDestination').selectedOptions[0]?.textContent||'chat'),4000);
+  }catch(e){toast(e.message||'Could not move source',4500);}
+  finally{btn.disabled=false;}
+}
+
 function renderKnowledge(){
   const root=$('knowledgeList');root.innerHTML='';
   const q=$('knowledgeSearch').value.trim().toLowerCase();
@@ -303,7 +359,7 @@ function renderKnowledge(){
     return matchesQ&&matchesType&&matchesStatus;
   });
   if(!rows.length){
-    root.innerHTML='<div class="knowledge-empty"><div class="knowledge-empty-icon">▤</div><strong>'+(all.length?'No matching sources':(state.knowledgeScope==='chat'?'No Knowledge attached to this chat':'No unassigned sources'))+'</strong><p>'+(all.length?'Try a different search or filter.':(state.knowledgeScope==='chat'?'Add sources here and only this chat will retrieve them.':'Your existing unassigned sources will appear here.'))+'</p>'+(all.length||state.knowledgeScope!=='chat'?'':'<button id="emptyAddKnowledge" class="primary-btn">＋ Add source to this chat</button>')+'</div>';
+    root.innerHTML='<div class="knowledge-empty"><div class="knowledge-empty-icon">▤</div><strong>'+(all.length?'No matching sources':(state.knowledgeScope==='chat'?'No Knowledge attached to this chat':state.knowledgeScope==='global'?'No Global Knowledge yet':'No unassigned sources'))+'</strong><p>'+(all.length?'Try a different search or filter.':(state.knowledgeScope==='chat'?'Add specialist sources here. Global Knowledge will still be available too.':state.knowledgeScope==='global'?'Move general-purpose sources here to make them available in every chat.':'Stored sources that are not currently used by any chat appear here.'))+'</p>'+(all.length||state.knowledgeScope!=='chat'?'':'<button id="emptyAddKnowledge" class="primary-btn">＋ Add source to this chat</button>')+'</div>';
     const b=$('emptyAddKnowledge');if(b)b.onclick=()=>switchKnowledgeTab('add');
     return;
   }
@@ -317,10 +373,9 @@ function renderKnowledge(){
     const mediaDetail=media?(' · '+esc(String(meta.media_stage||status).replaceAll('_',' '))+(meta.duration_seconds?' · '+Math.floor(Number(meta.duration_seconds)/60)+':'+String(Math.floor(Number(meta.duration_seconds)%60)).padStart(2,'0'):'')+(meta.reference_sections?' · '+Number(meta.reference_sections)+' refs':'')):'';
     const baseDetail=media?(formatBytes(Number(meta.file_size||0))+mediaDetail):(Number(x.char_count||0).toLocaleString()+' chars · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks');
     const el=document.createElement('div');el.className='knowledge-item knowledge-library-item'+(x.enabled===false?' disabled':'');
-    el.innerHTML='<div class="knowledge-item-main"><div class="knowledge-source-icon">'+typeIcon+'</div><div class="knowledge-source-copy"><div class="knowledge-source-title-row"><strong>'+esc(x.title||'Untitled')+'</strong>'+(collection?'<span class="knowledge-collection-chip">'+esc(collection)+'</span>':'')+'</div><small>'+typeLabel+(partCount>1?' · '+partCount+' segments':'')+' · '+baseDetail+' · '+esc(status)+'</small>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'</div></div><div class="knowledge-actions">'+(state.knowledgeScope==='unassigned'&&state.activeId?'<button class="attach-chat" title="Attach to this chat">＋</button>':'')+'<button class="toggle" title="'+(x.enabled===false?'Enable':'Disable')+'">'+(x.enabled===false?'○':'●')+'</button><button class="rename" title="Rename">✎</button><button class="delete danger-hover" title="'+(state.knowledgeScope==='chat'?'Remove from this chat':'Delete permanently')+'">×</button></div>';
+    el.innerHTML='<div class="knowledge-item-main"><div class="knowledge-source-icon">'+typeIcon+'</div><div class="knowledge-source-copy"><div class="knowledge-source-title-row"><strong>'+esc(x.title||'Untitled')+'</strong>'+(collection?'<span class="knowledge-collection-chip">'+esc(collection)+'</span>':'')+'</div><small>'+typeLabel+(partCount>1?' · '+partCount+' segments':'')+' · '+baseDetail+' · '+esc(status)+'</small>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'</div></div><div class="knowledge-actions"><button class="move-source" title="Move to Global, another chat, or Unassigned">Move</button><button class="toggle" title="'+(x.enabled===false?'Enable':'Disable')+'">'+(x.enabled===false?'○':'●')+'</button><button class="rename" title="Rename">✎</button><button class="delete danger-hover" title="'+(state.knowledgeScope==='chat'?'Remove from this chat':'Delete permanently')+'">×</button></div>';
     const items=x._items||[x];
-    const attachBtn=el.querySelector('.attach-chat');
-    if(attachBtn)attachBtn.onclick=async()=>{if(!state.activeId)return;await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id)+'/attach',{method:'POST',body:JSON.stringify({conversation_id:state.activeId})})));state.knowledgeScope='chat';await loadKnowledge();syncKnowledgeScopeUI();toast('Attached to this chat');};
+    el.querySelector('.move-source').onclick=()=>openMoveKnowledge(x);
     el.querySelector('.toggle').onclick=async()=>{const value=x.enabled===false;await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id),{method:'PATCH',body:JSON.stringify({enabled:value})})));loadKnowledge();};
     el.querySelector('.rename').onclick=async()=>{const n=prompt('Rename knowledge source',x.title||'');if(n&&n.trim()){await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id),{method:'PATCH',body:JSON.stringify({title:n.trim().slice(0,160)})})));loadKnowledge();}};
     el.querySelector('.delete').onclick=async()=>{const removing=state.knowledgeScope==='chat';const msg=removing?'Remove “'+x.title+'” from this chat? The source itself will be preserved.':'Permanently delete “'+x.title+'”?';if(confirm(msg)){await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id)+(removing?'?conversation_id='+encodeURIComponent(state.activeId):''),{method:'DELETE'})));await loadKnowledge();toast(removing?'Removed from this chat':'Knowledge source deleted');}};
@@ -402,7 +457,9 @@ async function loadKnowledge(){
     syncKnowledgeScopeUI();
     const qs=state.knowledgeScope==='unassigned'
       ? '?scope=unassigned'
-      : '?scope=chat&conversation_id='+encodeURIComponent(state.activeId||'');
+      : state.knowledgeScope==='global'
+        ? '?scope=global'
+        : '?scope=chat&conversation_id='+encodeURIComponent(state.activeId||'');
     const d=await api('/api/knowledge'+qs);state.knowledge=d.sources||[];renderKnowledge();updateKnowledgeUploadRows();scheduleKnowledgePoll();
   }catch(e){
     $('knowledgeList').innerHTML='<div class="error-list">'+esc(e.message)+'</div>';$('knowledgeCount').textContent='Not configured';
@@ -482,6 +539,22 @@ function signedUploadFile(file,url,onProgress){
     xhr.onerror=()=>reject(new Error('Private upload failed'));
     xhr.onload=()=>xhr.status>=200&&xhr.status<300?resolve(true):reject(new Error('Private upload failed ('+xhr.status+')'));
     const fd=new FormData();fd.append('cacheControl','3600');fd.append('',file);xhr.send(fd);
+  });
+}
+function setFilePickerLabel(inputId,labelId){
+  const input=$(inputId),label=$(labelId);if(!input||!label)return;
+  const files=[...(input.files||[])];
+  label.textContent=files.length?(files.length===1?files[0].name:files.length+' files selected'):(input.multiple?'or drag & drop multiple files here · up to 100 MB each':'or drag & drop it here · up to 100 MB');
+}
+function bindFileDropzone(inputId,zoneId,labelId,onFiles){
+  const input=$(inputId),zone=$(zoneId);if(!input||!zone)return;
+  const sync=()=>{setFilePickerLabel(inputId,labelId);onFiles&&onFiles([...(input.files||[])]);};
+  input.addEventListener('change',sync);
+  ['dragenter','dragover'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.add('dragging');}));
+  ['dragleave','drop'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.remove('dragging');}));
+  zone.addEventListener('drop',e=>{
+    const files=[...(e.dataTransfer?.files||[])];if(!files.length)return;
+    const dt=new DataTransfer();for(const file of files)dt.items.add(file);input.files=dt.files;sync();
   });
 }
 function previewKnowledgeMedia(file){
@@ -634,9 +707,9 @@ $('videoInput').onchange=e=>addFiles(e.target.files);
 $('addWebsiteAttachment').onclick=addWebsiteAttachment;
 $('websiteUrlInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();addWebsiteAttachment();}};
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));document.querySelectorAll('.modal').forEach(m=>m.onclick=e=>{if(e.target===m)closeModal(m.id);});
-$('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeUnassignedTab').onclick=()=>switchKnowledgeTab('unassigned');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;$('knowledgeFile').onchange=e=>stageKnowledgeFiles(e.target.files);$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('knowledgeMediaFile').onchange=e=>previewKnowledgeMedia(e.target.files?.[0]||null);$('saveKnowledgeMedia').onclick=ingestKnowledgeMedia;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
+$('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeGlobalTab').onclick=()=>switchKnowledgeTab('global');$('knowledgeUnassignedTab').onclick=()=>switchKnowledgeTab('unassigned');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;bindFileDropzone('knowledgeFile','knowledgeFileDropzone','knowledgeTextFileLabel',files=>stageKnowledgeFiles(files));$('saveKnowledgeFiles').onclick=ingestFileKnowledge;bindFileDropzone('knowledgeMediaFile','knowledgeMediaDropzone','knowledgeMediaFileLabel',files=>previewKnowledgeMedia(files[0]||null));$('saveKnowledgeMedia').onclick=ingestKnowledgeMedia;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
 $('webToggle').onclick=()=>{state.webResearch=!state.webResearch;localStorage.setItem('uncensor.webResearch',String(state.webResearch));syncSettings();if(state.webResearch&&!state.webResearchEnabled)toast('Web Research is temporarily unavailable.',4500);};$('knowledgeToggle').onclick=()=>{state.knowledgeEnabled=!state.knowledgeEnabled;localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));syncSettings();};
-$('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);$('exportFullBackup').onclick=exportFullBackup;$('revokeThisDevice').onclick=revokeCurrentDevice;$('generatePairingCode').onclick=generatePairingCode;$('redeemPairingCode').onclick=redeemPairingCode;$('pairingCodeInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();redeemPairingCode();}};$('rotateRecoveryKey').onclick=rotateRecoveryKeyFromDevice;$('copyRecoveryKey').onclick=()=>{const v=$('recoveryKeyValue').textContent||'';if(v){navigator.clipboard.writeText(v);toast('Recovery key copied');}};
+$('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);$('exportFullBackup').onclick=exportFullBackup;$('saveRenameChat').onclick=saveChatRename;$('cancelRenameChat').onclick=()=>closeModal('renameChatModal');$('renameChatInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();saveChatRename();}};$('confirmMoveKnowledge').onclick=confirmMoveKnowledge;$('cancelMoveKnowledge').onclick=()=>closeModal('moveKnowledgeModal');$('revokeThisDevice').onclick=revokeCurrentDevice;$('generatePairingCode').onclick=generatePairingCode;$('redeemPairingCode').onclick=redeemPairingCode;$('pairingCodeInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();redeemPairingCode();}};$('rotateRecoveryKey').onclick=rotateRecoveryKeyFromDevice;$('copyRecoveryKey').onclick=()=>{const v=$('recoveryKeyValue').textContent||'';if(v){navigator.clipboard.writeText(v);toast('Recovery key copied');}};
 $('saveSettings').onclick=async()=>{state.knowledgeEnabled=$('settingKnowledge').checked;state.showSources=$('settingSources').checked;state.mode=$('responseMode').value;state.style=$('stylePrompt').value.trim()||DEFAULT_STYLE;const k=$('accessKeyInput').value.trim();if(k)localStorage.setItem('uncensor.accessKey',k);localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));localStorage.setItem('uncensor.sources',String(state.showSources));localStorage.setItem('uncensor.mode',state.mode);localStorage.setItem('uncensor.style',state.style);try{if(accessKey())await enrollDeviceSession();syncSettings();closeModal('settingsModal');renderMessages();toast(sessionToken()?'Settings saved · device enrolled':'Settings saved');if(hasPrivateAuth())await Promise.all([loadChats(),loadKnowledge(),loadMemories(),status(),health()]);}catch(e){localStorage.removeItem('uncensor.accessKey');syncSettings();toast((e.message||'Could not enroll device')+' Use a one-time link code from your enrolled phone if needed.',5500);}};
 document.querySelectorAll('.prompt-card').forEach(b=>b.onclick=()=>{$('input').value=b.dataset.prompt||'';autoGrow();$('input').focus();});
 
