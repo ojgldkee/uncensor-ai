@@ -948,7 +948,7 @@ async function findDuplicateFile(fileSha256: string, title: string, fileSize: nu
   const sha=String(fileSha256||'').toLowerCase().trim()
   if(sha){
     const exact=await db.from('private_ai_knowledge_sources')
-      .select('id').eq('source_type','file').eq('file_sha256',sha).maybeSingle()
+      .select('id').eq('file_sha256',sha).maybeSingle()
     if(exact.error)throw exact.error
     if(exact.data){
       const source=await readKnowledgeSource(exact.data.id)
@@ -1074,6 +1074,62 @@ async function knowledgeCreate(req: Request) {
   return createKnowledgeRecord(title,text,sourceType,metadata,fileSha||null)
 }
 
+async function knowledgeMediaCreate(req: Request) {
+  const body=await req.json().catch(()=>({}))
+  const title=String(body?.title||'Media source').trim().slice(0,160)||'Media source'
+  const path=String(body?.path||'')
+  const mime=String(body?.mime||'application/octet-stream').slice(0,120).toLowerCase()
+  const size=Number(body?.size||0)
+  const sha=String(body?.sha256||'').toLowerCase().trim()
+  const mode=String(body?.mode||'full').toLowerCase()==='transcript'?'transcript':'full'
+  const collection=String(body?.collection||'').trim().slice(0,80)
+  if(!path.startsWith('uploads/'))return json({error:'Invalid private media path.'},400)
+  if(!/^[a-f0-9]{64}$/.test(sha))return json({error:'Valid media fingerprint required.'},400)
+  if(!Number.isFinite(size)||size<=0||size>104857600)return json({error:'Media must be between 1 byte and 100 MB.'},413)
+  const sourceType=mime.startsWith('audio/')?'audio':mime.startsWith('video/')?'video':''
+  if(!sourceType)return json({error:'Only video or audio files are supported here.'},415)
+
+  const found=await findDuplicateFile(sha,title,size)
+  if(found)return json({ok:true,duplicate:true,duplicate_reason:found.reason,source:found.source})
+
+  const created=await db.from('private_ai_knowledge_sources').insert({
+    title,
+    source_type:sourceType,
+    enabled:true,
+    content_hash:'media:'+sha,
+    file_sha256:sha,
+    char_count:0,
+    chunk_count:0,
+    embedded_chunk_count:0,
+    status:'processing',
+    metadata:{
+      collection,
+      storage_path:path,
+      file_name:title,
+      file_size:size,
+      mime,
+      media_mode:mode,
+      media_stage:'queued',
+      media_progress:5,
+      uploaded_at:new Date().toISOString(),
+    },
+  }).select('id').single()
+  if(created.error){
+    if(String((created.error as any)?.code||'')==='23505'){
+      const exact=await db.from('private_ai_knowledge_sources').select('id').eq('file_sha256',sha).maybeSingle()
+      if(!exact.error&&exact.data)return json({ok:true,duplicate:true,duplicate_reason:'exact_sha256',source:await readKnowledgeSource(exact.data.id)})
+    }
+    throw created.error
+  }
+
+  const job=await db.rpc('private_ai_enqueue_job',{job:{
+    type:'process_media_source',
+    source_id:created.data.id,
+  }})
+  if(job.error)throw job.error
+  return json({ok:true,duplicate:false,source_id:created.data.id,background:true,status:'processing'})
+}
+
 async function knowledgeUrlCreate(req: Request) {
   const body = await req.json().catch(() => ({}))
   const url = String(body?.url || '').trim()
@@ -1146,6 +1202,7 @@ Deno.serve(async (req) => {
     if (path === '/api/knowledge/file-check' && req.method === 'POST') return knowledgeFileCheck(req)
     if (path === '/api/knowledge' && req.method === 'POST') return knowledgeCreate(req)
     if (path === '/api/knowledge/url' && req.method === 'POST') return knowledgeUrlCreate(req)
+    if (path === '/api/knowledge/media' && req.method === 'POST') return knowledgeMediaCreate(req)
 
     const conv = path.match(/^\/api\/conversations\/([^/]+)$/)
     if (conv) {
@@ -1177,8 +1234,11 @@ Deno.serve(async (req) => {
         return json({ ok: true, source: read })
       }
       if (req.method === 'DELETE') {
+        const existing=await readKnowledgeSource(id)
+        const storagePath=String(existing?.metadata?.storage_path||'')
         const q = await db.from('private_ai_knowledge_sources').delete().eq('id', id)
         if (q.error) throw q.error
+        if(storagePath.startsWith('uploads/'))await db.storage.from(ATTACHMENT_BUCKET).remove([storagePath])
         return json({ ok: true, permanent: true })
       }
     }
