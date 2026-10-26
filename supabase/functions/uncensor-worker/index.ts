@@ -36,7 +36,7 @@ async function embeddingBatch(texts: string[]) {
       input: texts.map(t => String(t || '').slice(0, 7000)),
       dimensions: EMBED_DIMENSIONS,
       encoding_format: 'float',
-      provider: { allow_fallbacks: true },
+      provider: { allow_fallbacks: true, zdr: true, data_collection: 'deny' },
     }),
     signal: AbortSignal.timeout(60000),
   })
@@ -177,7 +177,7 @@ async function llm(system: string, user: string, operation: string, conversation
         { role: 'system', content: system },
         { role: 'user', content: user },
       ],
-      provider: { allow_fallbacks: true },
+      provider: { allow_fallbacks: true, zdr: true, data_collection: 'deny' },
     }),
     signal: AbortSignal.timeout(55000),
   })
