@@ -1,6 +1,6 @@
 const $=id=>document.getElementById(id);
 const DEFAULT_STYLE='Be direct, specific, intellectually curious, and nonjudgmental. Do not avoid a topic merely because it is controversial, sensitive, adult, or unconventional. Correct false premises, distinguish facts from uncertainty, and give useful specifics. If the exact request cannot be fulfilled, give the closest useful answer instead of boilerplate.';
-const state={conversations:[],activeId:null,activeConversation:null,messages:[],knowledge:[],memories:[],pendingAttachments:[],knowledgeFileUploads:[],knowledgePollTimer:null,webResearch:localStorage.getItem('uncensor.webResearch')==='true',webResearchEnabled:false,sending:false,abort:null,knowledgeEnabled:localStorage.getItem('uncensor.knowledge')!=='false',showSources:localStorage.getItem('uncensor.sources')!=='false',mode:localStorage.getItem('uncensor.mode')||'direct',style:localStorage.getItem('uncensor.style')||DEFAULT_STYLE};
+const state={conversations:[],activeId:null,activeConversation:null,messages:[],knowledge:[],knowledgeScope:'chat',memories:[],pendingAttachments:[],knowledgeFileUploads:[],knowledgePollTimer:null,webResearch:localStorage.getItem('uncensor.webResearch')==='true',webResearchEnabled:false,sending:false,abort:null,knowledgeEnabled:localStorage.getItem('uncensor.knowledge')!=='false',showSources:localStorage.getItem('uncensor.sources')!=='false',mode:localStorage.getItem('uncensor.mode')||'direct',style:localStorage.getItem('uncensor.style')||DEFAULT_STYLE};
 
 function esc(v){return String(v||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
 function md(v){let s=esc(v);s=s.replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h1>$1</h1>');s=s.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>');return s.split(/\n{2,}/).map(p=>/^<h\d/.test(p)?p:'<p>'+p.replace(/\n/g,'<br>')+'</p>').join('');}
@@ -81,6 +81,20 @@ async function revokeCurrentDevice(){
   localStorage.removeItem('uncensor.sessionToken');localStorage.removeItem('uncensor.sessionId');localStorage.removeItem('uncensor.sessionExpires');
   syncSettings();toast('This device session was revoked.');openModal('settingsModal');
 }
+async function exportFullBackup(){
+  if(!ensurePrivateAuth())return;
+  const btn=$('exportFullBackup');btn.disabled=true;$('backupStatus').textContent='Building backup…';
+  try{
+    const d=await api('/api/backup/export');
+    const stamp=new Date().toISOString().replace(/[:.]/g,'-');
+    const blob=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='uncensor-ai-backup-'+stamp+'.json';a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+    $('backupStatus').textContent='Backup downloaded. It contains decrypted private data — store it securely.';
+    toast('Full backup downloaded',3500);
+  }catch(e){$('backupStatus').textContent='Backup failed: '+(e.message||'unknown error');toast(e.message||'Backup failed',4500);}
+  finally{btn.disabled=false;}
+}
 async function api(path,opt={}){const h=Object.assign(authHeaders(),opt.headers||{});const r=await fetch(endpoint(path),Object.assign({},opt,{headers:h}));const tx=await r.text();let d={};try{d=tx?JSON.parse(tx):{};}catch{d={error:tx||'Unexpected response'};}if(r.status===401&&d.requires_access_key&&sessionToken()){localStorage.removeItem('uncensor.sessionToken');localStorage.removeItem('uncensor.sessionId');localStorage.removeItem('uncensor.sessionExpires');syncSettings();}if(!r.ok)throw Object.assign(new Error(d.error||('Request failed '+r.status)),{data:d,status:r.status});return d;}
 function autoGrow(){const e=$('input');e.style.height='auto';e.style.height=Math.min(200,e.scrollHeight)+'px';$('charCount').textContent=e.value.length.toLocaleString()+' / 50,000';}
 function activeTitle(){return (state.activeConversation&&state.activeConversation.title)||(state.conversations.find(x=>x.id===state.activeId)||{}).title||'New chat';}
@@ -112,11 +126,11 @@ async function health(){
 
 function renderConversations(){const root=$('conversationList');root.innerHTML='';const q=$('chatSearch').value.trim().toLowerCase();const rows=state.conversations.filter(c=>!q||String(c.title||'').toLowerCase().includes(q));$('chatCount').textContent=String(state.conversations.length);if(!rows.length){root.innerHTML='<div class="empty-list">'+(q?'No matching chats.':'No saved chats yet.')+'</div>';return;}rows.forEach(c=>{const el=document.createElement('div');el.className='conversation-item'+(c.id===state.activeId?' active':'');const open=document.createElement('button');open.className='conversation-open';open.innerHTML='<span class="title">'+(c.pinned?'★ ':'')+esc(c.title||'New chat')+'</span><small>'+when(c.updated_at)+'</small>';open.onclick=()=>openChat(c.id);const a=document.createElement('div');a.className='conversation-actions';const pin=document.createElement('button');pin.textContent=c.pinned?'★':'☆';pin.title=c.pinned?'Unpin':'Pin';pin.onclick=e=>{e.stopPropagation();patchChat(c.id,{pinned:!c.pinned});};const ren=document.createElement('button');ren.textContent='✎';ren.title='Rename';ren.onclick=e=>{e.stopPropagation();renameChat(c.id,c.title);};const del=document.createElement('button');del.textContent='×';del.className='danger-hover';del.title='Delete permanently';del.onclick=e=>{e.stopPropagation();deleteChat(c.id,c.title);};a.append(pin,ren,del);el.append(open,a);root.append(el);});}
 async function loadChats(){try{const d=await api('/api/conversations');state.conversations=d.conversations||[];if(state.activeId)state.activeConversation=state.conversations.find(x=>x.id===state.activeId)||state.activeConversation;renderConversations();header();}catch{state.conversations=[];renderConversations();}}
-async function openChat(id){state.activeId=id;try{const d=await api('/api/conversations/'+encodeURIComponent(id));state.activeConversation=d.conversation;state.messages=d.messages||[];renderMessages();renderConversations();header();closeSidebar();}catch(e){toast(e.message);}}
+async function openChat(id){state.activeId=id;try{const d=await api('/api/conversations/'+encodeURIComponent(id));state.activeConversation=d.conversation;state.messages=d.messages||[];renderMessages();renderConversations();header();syncKnowledgeScopeUI();if(!$('knowledgeModal').classList.contains('hidden'))loadKnowledge();closeSidebar();}catch(e){toast(e.message);}}
 async function patchChat(id,p){try{await api('/api/conversations/'+encodeURIComponent(id),{method:'PATCH',body:JSON.stringify(p)});await loadChats();}catch(e){toast(e.message);}}
 async function renameChat(id=state.activeId,current=activeTitle()){if(!id)return;const n=prompt('Rename this chat',current||'');if(n==null||!n.trim())return;await patchChat(id,{title:n.trim().slice(0,120)});if(id===state.activeId){state.activeConversation=Object.assign({},state.activeConversation||{},{title:n.trim().slice(0,120)});header();}}
 async function deleteChat(id=state.activeId,title=activeTitle()){if(!id)return;if(!confirm('Permanently delete “'+(title||'this chat')+'”?\\n\\nEvery saved message in it will be deleted and this cannot be undone.'))return;try{await api('/api/conversations/'+encodeURIComponent(id),{method:'DELETE'});if(state.activeId===id)newChat(false);await loadChats();toast('Chat permanently deleted');}catch(e){toast(e.message);}}
-function newChat(close=true){if(state.sending&&state.abort)state.abort.abort();clearPendingAttachments();state.activeId=null;state.activeConversation=null;state.messages=[];renderMessages();renderConversations();header();$('input').focus();if(close)closeSidebar();}
+function newChat(close=true){if(state.sending&&state.abort)state.abort.abort();clearPendingAttachments();state.activeId=null;state.activeConversation=null;state.messages=[];state.knowledgeScope='chat';renderMessages();renderConversations();header();syncKnowledgeScopeUI();$('input').focus();if(close)closeSidebar();}
 
 function fileKind(file){
   const type=String(file.type||'').toLowerCase(),name=String(file.name||'').toLowerCase();
@@ -167,7 +181,7 @@ function addWebsiteAttachment(){
 function clearPendingAttachments(){state.pendingAttachments=[];renderAttachmentTray();}
 
 function safeHttpUrl(v){try{const u=new URL(String(v||''));return ['http:','https:'].includes(u.protocol)?u.toString():'';}catch{return'';}}
-async function saveWebSourcesToKnowledge(sources){const urls=[...new Set((sources||[]).map(s=>safeHttpUrl(s.url)).filter(Boolean))].slice(0,10);if(!urls.length)return;let added=0,dupes=0,failed=0;toast('Saving web sources to Knowledge…',5000);for(const url of urls){try{const d=await api('/api/knowledge/url',{method:'POST',body:JSON.stringify({url,collection:'Web Research'})});if(d.duplicate)dupes++;else added++;}catch{failed++;}}await loadKnowledge();toast(added+' saved'+(dupes?' · '+dupes+' already existed':'')+(failed?' · '+failed+' failed':''),4000);}
+async function saveWebSourcesToKnowledge(sources){if(!state.activeId){toast('Send one message first so this chat exists, then save sources to it.',4500);return;}const urls=[...new Set((sources||[]).map(s=>safeHttpUrl(s.url)).filter(Boolean))].slice(0,10);if(!urls.length)return;let added=0,dupes=0,failed=0;toast('Saving web sources to this chat…',5000);for(const url of urls){try{const d=await api('/api/knowledge/url',{method:'POST',body:JSON.stringify({url,collection:'Web Research',conversation_id:state.activeId})});if(d.duplicate)dupes++;else added++;}catch{failed++;}}state.knowledgeScope='chat';await loadKnowledge();toast(added+' saved to this chat'+(dupes?' · '+dupes+' already existed and were attached':'')+(failed?' · '+failed+' failed':''),4000);}
 function appendMessage(m,scroll=true){$('emptyState').classList.add('hidden');const root=$('messages'),el=document.createElement('article');el.className='message '+m.role;const atts=(m.attachments||[]).slice(0,12),attHtml=atts.length?'<div class="message-attachments">'+atts.map(a=>'<span class="message-attachment">'+attIcon(a.kind)+' '+esc(a.name||a.url||'Attachment')+'</span>').join('')+'</div>':'';if(m.role==='assistant'){const sources=(m.sources||[]).slice(0,12),webSources=sources.filter(s=>safeHttpUrl(s.url));const sourceHtml=state.showSources&&sources.length?'<div class="source-chips">'+sources.map(s=>{const u=safeHttpUrl(s.url),label=(s.ref?s.ref+' · ':'')+(s.title|| (u?new URL(u).hostname:'Knowledge'));return u?'<a class="source-chip web-source" href="'+esc(u)+'" target="_blank" rel="noopener noreferrer">'+esc(label)+'</a>':'<span class="source-chip">'+esc(label)+'</span>';}).join('')+'</div>':'';el.innerHTML='<div class="avatar">U</div><div class="message-content"><div class="message-body">'+md(m.content||'')+'</div>'+attHtml+sourceHtml+'<div class="message-actions"><button class="copy">Copy</button>'+(webSources.length?'<button class="save-web">Save web sources to Knowledge</button>':'')+'</div></div>';el.querySelector('.copy').onclick=()=>{navigator.clipboard.writeText(m.content||'');toast('Copied');};const save=el.querySelector('.save-web');if(save)save.onclick=()=>saveWebSourcesToKnowledge(webSources);}else el.innerHTML='<div class="message-body">'+md(m.content||'')+'</div>'+attHtml;root.append(el);if(scroll)root.scrollTop=root.scrollHeight;return el;}
 function renderMessages(){const root=$('messages');root.innerHTML='';$('emptyState').classList.toggle('hidden',state.messages.length>0);state.messages.forEach(m=>appendMessage(m,false));root.scrollTop=root.scrollHeight;header();}
 
@@ -248,12 +262,27 @@ function knowledgeLogicalSources(items){
   }
   return out.sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0));
 }
+function syncKnowledgeScopeUI(){
+  const chat=state.knowledgeScope==='chat';
+  $('knowledgeLibraryTab').classList.toggle('active',chat);
+  $('knowledgeUnassignedTab').classList.toggle('active',!chat);
+  const title=state.activeConversation?.title||'this chat';
+  $('knowledgeScopeDescription').textContent=chat
+    ? (state.activeId?'Only "'+title+'" can retrieve these sources. Other chats cannot use them.':'Start or open a chat to give it private Knowledge.')
+    : 'Sources not assigned to any chat yet. Attach them to the current chat when you want to use them.';
+  $('knowledgeSearch').placeholder=chat?"Search this chat's Knowledge…":"Search unassigned Knowledge…";
+  $('knowledgeAddScopeText').textContent=state.activeId
+    ? 'New sources will belong only to "'+title+'". They can be attached to another chat later without duplicating the file.'
+    : 'Send one message first so this chat exists, then add private sources to it.';
+}
 function switchKnowledgeTab(tab){
+  if(tab==='unassigned')state.knowledgeScope='unassigned';
+  if(tab==='library')state.knowledgeScope='chat';
   const library=tab!=='add';
   $('knowledgeLibraryPanel').classList.toggle('hidden',!library);
   $('knowledgeAddPanel').classList.toggle('hidden',library);
-  $('knowledgeLibraryTab').classList.toggle('active',library);
   $('knowledgeAddTab').classList.toggle('active',!library);
+  syncKnowledgeScopeUI();
   if(library){loadKnowledge();setTimeout(()=>$('knowledgeSearch').focus(),40);}
 }
 function renderKnowledge(){
@@ -274,7 +303,7 @@ function renderKnowledge(){
     return matchesQ&&matchesType&&matchesStatus;
   });
   if(!rows.length){
-    root.innerHTML='<div class="knowledge-empty"><div class="knowledge-empty-icon">▤</div><strong>'+(all.length?'No matching sources':'Your global knowledge library is empty')+'</strong><p>'+(all.length?'Try a different search or filter.':'Add websites, notes, transcripts, or files. They will be available from every chat.')+'</p>'+(all.length?'':'<button id="emptyAddKnowledge" class="primary-btn">＋ Add your first source</button>')+'</div>';
+    root.innerHTML='<div class="knowledge-empty"><div class="knowledge-empty-icon">▤</div><strong>'+(all.length?'No matching sources':(state.knowledgeScope==='chat'?'No Knowledge attached to this chat':'No unassigned sources'))+'</strong><p>'+(all.length?'Try a different search or filter.':(state.knowledgeScope==='chat'?'Add sources here and only this chat will retrieve them.':'Your existing unassigned sources will appear here.'))+'</p>'+(all.length||state.knowledgeScope!=='chat'?'':'<button id="emptyAddKnowledge" class="primary-btn">＋ Add source to this chat</button>')+'</div>';
     const b=$('emptyAddKnowledge');if(b)b.onclick=()=>switchKnowledgeTab('add');
     return;
   }
@@ -288,11 +317,13 @@ function renderKnowledge(){
     const mediaDetail=media?(' · '+esc(String(meta.media_stage||status).replaceAll('_',' '))+(meta.duration_seconds?' · '+Math.floor(Number(meta.duration_seconds)/60)+':'+String(Math.floor(Number(meta.duration_seconds)%60)).padStart(2,'0'):'')+(meta.reference_sections?' · '+Number(meta.reference_sections)+' refs':'')):'';
     const baseDetail=media?(formatBytes(Number(meta.file_size||0))+mediaDetail):(Number(x.char_count||0).toLocaleString()+' chars · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks');
     const el=document.createElement('div');el.className='knowledge-item knowledge-library-item'+(x.enabled===false?' disabled':'');
-    el.innerHTML='<div class="knowledge-item-main"><div class="knowledge-source-icon">'+typeIcon+'</div><div class="knowledge-source-copy"><div class="knowledge-source-title-row"><strong>'+esc(x.title||'Untitled')+'</strong>'+(collection?'<span class="knowledge-collection-chip">'+esc(collection)+'</span>':'')+'</div><small>'+typeLabel+(partCount>1?' · '+partCount+' segments':'')+' · '+baseDetail+' · '+esc(status)+'</small>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'</div></div><div class="knowledge-actions"><button class="toggle" title="'+(x.enabled===false?'Enable':'Disable')+'">'+(x.enabled===false?'○':'●')+'</button><button class="rename" title="Rename">✎</button><button class="delete danger-hover" title="Delete permanently">×</button></div>';
+    el.innerHTML='<div class="knowledge-item-main"><div class="knowledge-source-icon">'+typeIcon+'</div><div class="knowledge-source-copy"><div class="knowledge-source-title-row"><strong>'+esc(x.title||'Untitled')+'</strong>'+(collection?'<span class="knowledge-collection-chip">'+esc(collection)+'</span>':'')+'</div><small>'+typeLabel+(partCount>1?' · '+partCount+' segments':'')+' · '+baseDetail+' · '+esc(status)+'</small>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'</div></div><div class="knowledge-actions">'+(state.knowledgeScope==='unassigned'&&state.activeId?'<button class="attach-chat" title="Attach to this chat">＋</button>':'')+'<button class="toggle" title="'+(x.enabled===false?'Enable':'Disable')+'">'+(x.enabled===false?'○':'●')+'</button><button class="rename" title="Rename">✎</button><button class="delete danger-hover" title="'+(state.knowledgeScope==='chat'?'Remove from this chat':'Delete permanently')+'">×</button></div>';
     const items=x._items||[x];
+    const attachBtn=el.querySelector('.attach-chat');
+    if(attachBtn)attachBtn.onclick=async()=>{if(!state.activeId)return;await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id)+'/attach',{method:'POST',body:JSON.stringify({conversation_id:state.activeId})})));state.knowledgeScope='chat';await loadKnowledge();syncKnowledgeScopeUI();toast('Attached to this chat');};
     el.querySelector('.toggle').onclick=async()=>{const value=x.enabled===false;await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id),{method:'PATCH',body:JSON.stringify({enabled:value})})));loadKnowledge();};
     el.querySelector('.rename').onclick=async()=>{const n=prompt('Rename knowledge source',x.title||'');if(n&&n.trim()){await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id),{method:'PATCH',body:JSON.stringify({title:n.trim().slice(0,160)})})));loadKnowledge();}};
-    el.querySelector('.delete').onclick=async()=>{if(confirm('Permanently delete “'+x.title+'”'+(partCount>1?' and all '+partCount+' segments':'')+'?')){await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id),{method:'DELETE'})));await loadKnowledge();toast('Knowledge source deleted');}};
+    el.querySelector('.delete').onclick=async()=>{const removing=state.knowledgeScope==='chat';const msg=removing?'Remove “'+x.title+'” from this chat? The source itself will be preserved.':'Permanently delete “'+x.title+'”?';if(confirm(msg)){await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id)+(removing?'?conversation_id='+encodeURIComponent(state.activeId):''),{method:'DELETE'})));await loadKnowledge();toast(removing?'Removed from this chat':'Knowledge source deleted');}};
     root.append(el);
   });
 }
@@ -368,12 +399,17 @@ function stageKnowledgeFiles(files){
 }
 async function loadKnowledge(){
   try{
-    const d=await api('/api/knowledge');state.knowledge=d.sources||[];renderKnowledge();updateKnowledgeUploadRows();scheduleKnowledgePoll();
+    syncKnowledgeScopeUI();
+    const qs=state.knowledgeScope==='unassigned'
+      ? '?scope=unassigned'
+      : '?scope=chat&conversation_id='+encodeURIComponent(state.activeId||'');
+    const d=await api('/api/knowledge'+qs);state.knowledge=d.sources||[];renderKnowledge();updateKnowledgeUploadRows();scheduleKnowledgePoll();
   }catch(e){
     $('knowledgeList').innerHTML='<div class="error-list">'+esc(e.message)+'</div>';$('knowledgeCount').textContent='Not configured';
   }
 }
 async function importKnowledgeUrls(){
+  if(!state.activeId){toast('Send one message first so this chat exists, then add Knowledge.',4500);return;}
   const raw=$('knowledgeUrls').value.trim();if(!raw)return;
   const collection=$('knowledgeCollection').value.trim().slice(0,80);
   const urls=[...new Set(raw.split(/\s+/).filter(Boolean))].slice(0,20);
@@ -384,7 +420,7 @@ async function importKnowledgeUrls(){
     for(let i=0;i<urls.length;i++){
       $('knowledgeUrlStatus').textContent='Importing '+(i+1)+' / '+urls.length+'…';
       try{
-        const d=await api('/api/knowledge/url',{method:'POST',body:JSON.stringify({url:urls[i],collection})});
+        const d=await api('/api/knowledge/url',{method:'POST',body:JSON.stringify({url:urls[i],collection,conversation_id:state.activeId})});
         if(d.duplicate)duplicates++;else added++;
       }catch{failed++;}
     }
@@ -392,13 +428,14 @@ async function importKnowledgeUrls(){
     $('knowledgeUrlStatus').textContent=added+' page'+(added===1?'':'s')+' queued'+(duplicates?' · '+duplicates+' duplicate'+(duplicates===1?'':'s')+' skipped':'')+(failed?' · '+failed+' failed':'')+'. You can close the tab while indexing continues.';
     await loadKnowledge();
     if(added)switchKnowledgeTab('library');
-    toast(added?'Web knowledge added':'Website import finished',3500);
+    toast(added?'Web knowledge added to this chat':'Website import finished',3500);
   }finally{btn.disabled=false;}
 }
 async function ingestOne(j){
+  if(!state.activeId)throw new Error('Send one message first so this chat exists, then add Knowledge.')
   const collection=$('knowledgeCollection').value.trim().slice(0,80);
   const metadata=Object.assign({},j.metadata||{},{collection});
-  const d=await api('/api/knowledge',{method:'POST',body:JSON.stringify({title:j.title,text:j.text,source_type:j.type,metadata})});
+  const d=await api('/api/knowledge',{method:'POST',body:JSON.stringify({title:j.title,text:j.text,source_type:j.type,metadata,conversation_id:state.activeId})});
   if(d.duplicate)return{chunks:0,duplicate:true,duplicateReason:d.duplicate_reason||'content',sourceId:d.source?.id||null,title:(d.source&&d.source.title)||j.title};
   return{chunks:Number(d.chunk_count||0),duplicate:false,sourceId:d.source_id||null,title:j.title};
 }
@@ -415,7 +452,7 @@ async function ingestJobs(jobs,button){
     $('ingestProgressBar').style.width='100%';
     $('ingestProgressText').textContent=(queued?queued.toLocaleString()+' chunks queued. ':'')+(duplicates?duplicates+' duplicate source'+(duplicates===1?'':'s')+' skipped. ':'')+'Indexing continues in the background.';
     await loadKnowledge();switchKnowledgeTab('library');
-    toast(duplicates&&duplicates===jobs.length?'Already in your library':'Added to global Knowledge',3500);
+    toast(duplicates&&duplicates===jobs.length?'Already existed — attached to this chat':'Added to this chat Knowledge',3500);
     setTimeout(()=>$('ingestProgress').classList.add('hidden'),3000);
   }catch(e){toast(e.message,4000);$('ingestProgress').classList.add('hidden');}
   finally{button.disabled=false;}
@@ -455,6 +492,7 @@ function previewKnowledgeMedia(file){
   root.innerHTML='<strong>'+esc(file.name)+'</strong><small>'+kind+' · '+formatBytes(file.size)+'</small><span>Will become a permanent timestamped reference source.</span>';
 }
 async function ingestKnowledgeMedia(){
+  if(!state.activeId){toast('Send one message first so this chat exists, then add media Knowledge.',4500);return;}
   const file=$('knowledgeMediaFile').files?.[0];
   if(!file){toast('Choose a video or audio file first.');return;}
   if(file.size>100*1024*1024){toast('This upload is over the current 100 MB limit.',4500);return;}
@@ -465,7 +503,7 @@ async function ingestKnowledgeMedia(){
     const sha=await sha256File(file);row.sha256=sha;
     setKnowledgeFileStatus(row,'checking',7,'Checking for an identical source','duplicate check');
     const check=await api('/api/knowledge/file-check',{method:'POST',body:JSON.stringify({sha256:sha,name:file.name,size:file.size})});
-    if(check.duplicate){setKnowledgeFileStatus(row,'duplicate',100,'Already in Knowledge: '+String(check.source?.title||file.name),'duplicate blocked');toast('That exact media file is already in Knowledge.');return;}
+    if(check.duplicate){await api('/api/knowledge/'+encodeURIComponent(check.source.id)+'/attach',{method:'POST',body:JSON.stringify({conversation_id:state.activeId})});row.sourceIds=[check.source.id];setKnowledgeFileStatus(row,'ready',100,'Existing source attached to this chat','attached');state.knowledgeScope='chat';await loadKnowledge();toast('Existing media source attached to this chat.');return;}
 
     setKnowledgeFileStatus(row,'uploading',10,'Uploading into private Storage','uploading 0%');
     const signed=await api('/api/uploads/sign',{method:'POST',body:JSON.stringify({name:file.name,mime:file.type||'application/octet-stream',size:file.size,kind:file.type.startsWith('audio/')?'audio':'video'})});
@@ -476,7 +514,7 @@ async function ingestKnowledgeMedia(){
     setKnowledgeFileStatus(row,'queued',48,'Starting private media processing','queued');
     const created=await api('/api/knowledge/media',{method:'POST',body:JSON.stringify({
       title:file.name,path:signed.path,mime:file.type||'video/mp4',size:file.size,sha256:sha,
-      mode:$('knowledgeMediaMode').value,collection:$('knowledgeCollection').value.trim().slice(0,80)
+      mode:$('knowledgeMediaMode').value,collection:$('knowledgeCollection').value.trim().slice(0,80),conversation_id:state.activeId
     })});
     if(created.duplicate){
       await api('/api/uploads/discard',{method:'POST',body:JSON.stringify({path:signed.path})}).catch(()=>{});
@@ -492,6 +530,7 @@ async function ingestKnowledgeMedia(){
 }
 
 async function ingestFileKnowledge(){
+  if(!state.activeId){toast('Send one message first so this chat exists, then add file Knowledge.',4500);return;}
   const files=[...$('knowledgeFile').files];
   if(!files.length){toast('Choose one or more files first.');return;}
   const maxFileBytes=100*1024*1024;
@@ -512,7 +551,9 @@ async function ingestFileKnowledge(){
         const check=await api('/api/knowledge/file-check',{method:'POST',body:JSON.stringify({sha256:fileSha256,name:file.name,size:file.size})});
         if(check.duplicate){
           duplicates++;
-          setKnowledgeFileStatus(row,'duplicate',100,'Already in library: '+String(check.source?.title||file.name),'duplicate blocked');
+          await api('/api/knowledge/'+encodeURIComponent(check.source.id)+'/attach',{method:'POST',body:JSON.stringify({conversation_id:state.activeId})});
+          row.sourceIds=[check.source.id];
+          setKnowledgeFileStatus(row,'ready',100,'Existing source attached to this chat','attached');
           continue;
         }
 
@@ -593,9 +634,9 @@ $('videoInput').onchange=e=>addFiles(e.target.files);
 $('addWebsiteAttachment').onclick=addWebsiteAttachment;
 $('websiteUrlInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();addWebsiteAttachment();}};
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));document.querySelectorAll('.modal').forEach(m=>m.onclick=e=>{if(e.target===m)closeModal(m.id);});
-$('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;$('knowledgeFile').onchange=e=>stageKnowledgeFiles(e.target.files);$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('knowledgeMediaFile').onchange=e=>previewKnowledgeMedia(e.target.files?.[0]||null);$('saveKnowledgeMedia').onclick=ingestKnowledgeMedia;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
+$('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeUnassignedTab').onclick=()=>switchKnowledgeTab('unassigned');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;$('knowledgeFile').onchange=e=>stageKnowledgeFiles(e.target.files);$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('knowledgeMediaFile').onchange=e=>previewKnowledgeMedia(e.target.files?.[0]||null);$('saveKnowledgeMedia').onclick=ingestKnowledgeMedia;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
 $('webToggle').onclick=()=>{state.webResearch=!state.webResearch;localStorage.setItem('uncensor.webResearch',String(state.webResearch));syncSettings();if(state.webResearch&&!state.webResearchEnabled)toast('Web Research is temporarily unavailable.',4500);};$('knowledgeToggle').onclick=()=>{state.knowledgeEnabled=!state.knowledgeEnabled;localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));syncSettings();};
-$('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);$('revokeThisDevice').onclick=revokeCurrentDevice;$('generatePairingCode').onclick=generatePairingCode;$('redeemPairingCode').onclick=redeemPairingCode;$('pairingCodeInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();redeemPairingCode();}};$('rotateRecoveryKey').onclick=rotateRecoveryKeyFromDevice;$('copyRecoveryKey').onclick=()=>{const v=$('recoveryKeyValue').textContent||'';if(v){navigator.clipboard.writeText(v);toast('Recovery key copied');}};
+$('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);$('exportFullBackup').onclick=exportFullBackup;$('revokeThisDevice').onclick=revokeCurrentDevice;$('generatePairingCode').onclick=generatePairingCode;$('redeemPairingCode').onclick=redeemPairingCode;$('pairingCodeInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();redeemPairingCode();}};$('rotateRecoveryKey').onclick=rotateRecoveryKeyFromDevice;$('copyRecoveryKey').onclick=()=>{const v=$('recoveryKeyValue').textContent||'';if(v){navigator.clipboard.writeText(v);toast('Recovery key copied');}};
 $('saveSettings').onclick=async()=>{state.knowledgeEnabled=$('settingKnowledge').checked;state.showSources=$('settingSources').checked;state.mode=$('responseMode').value;state.style=$('stylePrompt').value.trim()||DEFAULT_STYLE;const k=$('accessKeyInput').value.trim();if(k)localStorage.setItem('uncensor.accessKey',k);localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));localStorage.setItem('uncensor.sources',String(state.showSources));localStorage.setItem('uncensor.mode',state.mode);localStorage.setItem('uncensor.style',state.style);try{if(accessKey())await enrollDeviceSession();syncSettings();closeModal('settingsModal');renderMessages();toast(sessionToken()?'Settings saved · device enrolled':'Settings saved');if(hasPrivateAuth())await Promise.all([loadChats(),loadKnowledge(),loadMemories(),status(),health()]);}catch(e){localStorage.removeItem('uncensor.accessKey');syncSettings();toast((e.message||'Could not enroll device')+' Use a one-time link code from your enrolled phone if needed.',5500);}};
 document.querySelectorAll('.prompt-card').forEach(b=>b.onclick=()=>{$('input').value=b.dataset.prompt||'';autoGrow();$('input').focus();});
 
