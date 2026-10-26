@@ -26,6 +26,18 @@ async function enrollDeviceSession(){
   syncSettings();
   return true;
 }
+async function rotateRecoveryKeyFromDevice(){
+  if(!sessionToken()){toast('Enroll this device first.',3500);return;}
+  if(!confirm('Generate a new recovery key? Any older recovery/master key will stop working. Your current device session will stay signed in.'))return;
+  try{
+    const d=await api('/api/security/recovery-key/rotate',{method:'POST',body:'{}'});
+    if(!d.recovery_key)throw new Error('Recovery key was not returned.')
+    $('recoveryKeyValue').textContent=d.recovery_key;
+    $('recoveryKeyBox').classList.remove('hidden');
+    toast('New recovery key generated. Save it somewhere secure now.',5000);
+  }catch(e){toast(e.message||'Could not rotate recovery key',4500);}
+}
+
 async function revokeCurrentDevice(){
   const id=localStorage.getItem('uncensor.sessionId')||'';
   try{if(id)await api('/api/sessions/'+encodeURIComponent(id),{method:'DELETE'});}catch{}
@@ -461,7 +473,7 @@ $('websiteUrlInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();addWeb
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));document.querySelectorAll('.modal').forEach(m=>m.onclick=e=>{if(e.target===m)closeModal(m.id);});
 $('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;$('knowledgeFile').onchange=e=>stageKnowledgeFiles(e.target.files);$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
 $('webToggle').onclick=()=>{state.webResearch=!state.webResearch;localStorage.setItem('uncensor.webResearch',String(state.webResearch));syncSettings();if(state.webResearch&&!state.webResearchEnabled)toast('Web Research is temporarily unavailable.',4500);};$('knowledgeToggle').onclick=()=>{state.knowledgeEnabled=!state.knowledgeEnabled;localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));syncSettings();};
-$('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);$('revokeThisDevice').onclick=revokeCurrentDevice;
+$('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);$('revokeThisDevice').onclick=revokeCurrentDevice;$('rotateRecoveryKey').onclick=rotateRecoveryKeyFromDevice;$('copyRecoveryKey').onclick=()=>{const v=$('recoveryKeyValue').textContent||'';if(v){navigator.clipboard.writeText(v);toast('Recovery key copied');}};
 $('saveSettings').onclick=async()=>{state.knowledgeEnabled=$('settingKnowledge').checked;state.showSources=$('settingSources').checked;state.mode=$('responseMode').value;state.style=$('stylePrompt').value.trim()||DEFAULT_STYLE;const k=$('accessKeyInput').value.trim();if(k)localStorage.setItem('uncensor.accessKey',k);localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));localStorage.setItem('uncensor.sources',String(state.showSources));localStorage.setItem('uncensor.mode',state.mode);localStorage.setItem('uncensor.style',state.style);try{if(accessKey())await enrollDeviceSession();syncSettings();closeModal('settingsModal');renderMessages();toast('Settings saved · device enrolled');await Promise.all([loadChats(),loadKnowledge(),loadMemories(),status()]);}catch(e){toast(e.message||'Could not enroll device',4500);syncSettings();}};
 document.querySelectorAll('.prompt-card').forEach(b=>b.onclick=()=>{$('input').value=b.dataset.prompt||'';autoGrow();$('input').focus();});
 
