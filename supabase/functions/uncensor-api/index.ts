@@ -437,20 +437,19 @@ async function openRouterOnce(model: string, messages: any[]) {
 
 function privacyFirewallQuery(input: string) {
   let q=String(input||'').normalize('NFKC').slice(0,5000)
-  const redactions: Array<[RegExp,string]> = [
-    [/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi,'[private-email]'],
-    [/\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b/g,'[private-phone]'],
-    [/\b(?:sk|pk|rk|api|key|token)[-_][A-Za-z0-9_-]{12,}\b/gi,'[private-secret]'],
-    [/\b[A-F0-9]{8}-[A-F0-9]{4}-[1-5][A-F0-9]{3}-[89AB][A-F0-9]{3}-[A-F0-9]{12}\b/gi,'[private-id]'],
-    [/\b(?:\d{1,3}\.){3}\d{1,3}\b/g,'[private-ip]'],
-    [/\b\d{1,6}\s+[A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,4}\s+(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|court|ct|boulevard|blvd|way|place|pl)\b/gi,'[private-address]'],
-    [/\$\s?\d[\d,]*(?:\.\d+)?/g,'[private-amount]'],
-    [/\b\d{8,}\b/g,'[private-number]'],
-    [/https?:\/\/[^\s]+/gi,(m:string)=>{try{const u=new URL(m);return u.origin+'/[private-path]'}catch{return '[private-url]'}} as any],
-  ]
-  for(const [re,repl] of redactions)q=q.replace(re,repl as any)
 
-  // Remove common first-person private qualifiers while preserving the public topic.
+  q=q.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi,'[private-email]')
+  q=q.replace(/\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b/g,'[private-phone]')
+  q=q.replace(/\b(?:sk|pk|rk|api|key|token)[-_][A-Za-z0-9_-]{12,}\b/gi,'[private-secret]')
+  q=q.replace(/\b[A-F0-9]{8}-[A-F0-9]{4}-[1-5][A-F0-9]{3}-[89AB][A-F0-9]{3}-[A-F0-9]{12}\b/gi,'[private-id]')
+  q=q.replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g,'[private-ip]')
+  q=q.replace(/\b\d{1,6}\s+[A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,4}\s+(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|court|ct|boulevard|blvd|way|place|pl)\b/gi,'[private-address]')
+  q=q.replace(/\$\s?\d[\d,]*(?:\.\d+)?/g,'[private-amount]')
+  q=q.replace(/\b\d{8,}\b/g,'[private-number]')
+  q=q.replace(/https?:\/\/[^\s]+/gi,(m:string)=>{
+    try{const u=new URL(m);return u.origin+'/[private-path]'}catch{return '[private-url]'}
+  })
+
   q=q
     .replace(/\bmy\s+(?:full\s+)?(?:name|address|email|phone|account|api key|password|token|customer list|supplier|revenue|profit|balance)\b[^,.!?;]*/gi,'[private-detail]')
     .replace(/\bour\s+(?:customer list|supplier|revenue|profit|balance|private data)\b[^,.!?;]*/gi,'[private-detail]')
