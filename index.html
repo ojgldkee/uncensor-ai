@@ -15,8 +15,8 @@
     .hidden{display:none!important}
     #app{min-height:100dvh}
   </style>
-  <link rel="manifest" href="./manifest.webmanifest?v=26" />
-  <link rel="stylesheet" href="./styles.css?v=26" />
+  <link rel="manifest" href="./manifest.webmanifest?v=27" />
+  <link rel="stylesheet" href="./styles.css?v=27" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -155,6 +155,21 @@
           <span><strong id="knowledgeReadySources">0</strong> ready</span>
           <span><strong id="knowledgeTotalChunks">0</strong> chunks</span>
         </div>
+      </div>
+
+      <div id="chatKnowledgeMode" class="chat-knowledge-mode hidden">
+        <div class="chat-knowledge-mode-copy">
+          <div class="chat-knowledge-mode-title">
+            <span class="focus-dot"></span>
+            <strong id="chatKnowledgeModeTitle">Focused Knowledge</strong>
+          </div>
+          <small id="chatKnowledgeModeText">Only this chat's specialist sources are used.</small>
+        </div>
+        <label class="knowledge-switch">
+          <input id="useGlobalKnowledgeToggle" type="checkbox" />
+          <span class="knowledge-switch-track"><span></span></span>
+          <span class="knowledge-switch-label">Use Global too</span>
+        </label>
       </div>
 
       <div id="knowledgeFileQueue" class="knowledge-file-queue hidden" aria-live="polite"></div>
@@ -356,7 +371,7 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="./config.js?v=26"></script>
-  <script src="./app.js?v=26" defer></script>
+  <script src="./config.js?v=27"></script>
+  <script src="./app.js?v=27" defer></script>
 </body>
 </html>
