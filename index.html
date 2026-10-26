@@ -15,8 +15,8 @@
     .hidden{display:none!important}
     #app{min-height:100dvh}
   </style>
-  <link rel="manifest" href="./manifest.webmanifest?v=14" />
-  <link rel="stylesheet" href="./styles.css?v=14" />
+  <link rel="manifest" href="./manifest.webmanifest?v=15" />
+  <link rel="stylesheet" href="./styles.css?v=15" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -242,6 +242,14 @@
       <label class="setting-stack"><span><strong>Private access key</strong><small>Used once to enroll this browser as a revocable private device. The master key is removed from local storage after enrollment.</small></span><input id="accessKeyInput" type="password" autocomplete="off" placeholder="Enter master key to enroll this device" /></label>
       <div class="settings-info"><span>Device security</span><strong id="deviceSessionStatus">Checking…</strong></div>
       <button id="revokeThisDevice" class="secondary-btn" type="button">Revoke this device session</button>
+      <div class="security-recovery">
+        <div><strong>Offline recovery key</strong><small>Generate from this enrolled device. Save it in a password manager. The app will show it only once and will not store it on this device.</small></div>
+        <button id="rotateRecoveryKey" class="secondary-btn" type="button">Generate new recovery key</button>
+        <div id="recoveryKeyBox" class="recovery-key-box hidden">
+          <code id="recoveryKeyValue"></code>
+          <button id="copyRecoveryKey" class="text-btn" type="button">Copy</button>
+        </div>
+      </div>
       <label class="setting-stack"><span><strong>Custom instructions</strong><small>Added to the server-side assistant prompt for your requests.</small></span><textarea id="stylePrompt" rows="7"></textarea></label>
       <div class="settings-info"><span>Status</span><strong id="settingsStatus">Checking…</strong></div>
       <div class="settings-info"><span>Storage</span><strong>Chats + knowledge persist in Supabase</strong></div>
@@ -262,7 +270,7 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="./config.js?v=14"></script>
-  <script src="./app.js?v=14" defer></script>
+  <script src="./config.js?v=15"></script>
+  <script src="./app.js?v=15" defer></script>
 </body>
 </html>
