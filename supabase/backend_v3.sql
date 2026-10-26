@@ -1556,3 +1556,5 @@ as $$
 $$;
 revoke all on function public.private_ai_match_chunks_for_chat(extensions.vector,uuid,integer,double precision) from public,anon,authenticated;
 grant execute on function public.private_ai_match_chunks_for_chat(extensions.vector,uuid,integer,double precision) to service_role;
+
+create index if not exists private_ai_pairing_codes_created_by_session_idx on public.private_ai_pairing_codes(created_by_session);
