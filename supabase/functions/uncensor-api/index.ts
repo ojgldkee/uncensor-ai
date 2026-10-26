@@ -394,11 +394,16 @@ async function attachmentParts(attachments: any[]) {
   return { parts, forceMultimodal }
 }
 
-async function relevantContext(query: string, includeKnowledge: boolean) {
+async function relevantContext(query: string, includeKnowledge: boolean, conversationId: string) {
   const vector = await embed(query)
   const memoryPromise = db.rpc('private_ai_match_memories', { query_embedding: vector, match_count: 12, similarity_threshold: 0.24 })
-  const knowledgePromise = includeKnowledge
-    ? db.rpc('private_ai_match_chunks', { query_embedding: vector, match_count: 10, similarity_threshold: 0.25 })
+  const knowledgePromise = includeKnowledge && conversationId
+    ? db.rpc('private_ai_match_chunks_for_chat', {
+        query_embedding: vector,
+        target_conversation_id: conversationId,
+        match_count: 10,
+        similarity_threshold: 0.25
+      })
     : Promise.resolve({ data: [], error: null } as any)
   const [knowledge, memories] = await Promise.all([knowledgePromise, memoryPromise])
   return {
@@ -774,7 +779,7 @@ async function chat(req: Request) {
   const conversationId = String(conversation.id)
   await saveMessage(conversationId, 'user', text || 'Please analyze the attached item.', undefined, [], attachments)
 
-  const ctx = await relevantContext(text, body?.use_knowledge !== false)
+  const ctx = await relevantContext(text, body?.use_knowledge !== false, conversationId)
   const recent = await recentMessages(conversationId, Number(conversation.summary_through_message_count || 0))
 
   const memoryText = (ctx.memories || []).slice(0, 12).map((m: any) =>
@@ -953,12 +958,39 @@ async function memoriesRoute(req: Request) {
   return json({ error: 'Method not allowed' }, 405)
 }
 
-async function knowledgeList() {
-  const q = await db.from('private_ai_knowledge_sources_read')
-    .select('id,title,source_type,enabled,content_hash,file_sha256,char_count,chunk_count,embedded_chunk_count,status,failure_count,last_error,metadata,created_at,updated_at,completed_at')
-    .order('created_at', { ascending: false }).limit(1000)
-  if (q.error) throw q.error
-  return json({ sources: q.data || [] })
+async function knowledgeList(req: Request) {
+  const url=new URL(req.url)
+  const conversationId=String(url.searchParams.get('conversation_id')||'').trim()
+  const scope=String(url.searchParams.get('scope')||'chat')
+  const [sources,maps]=await Promise.all([
+    db.from('private_ai_knowledge_sources_read')
+      .select('id,title,source_type,enabled,content_hash,file_sha256,char_count,chunk_count,embedded_chunk_count,status,failure_count,last_error,metadata,created_at,updated_at,completed_at')
+      .order('created_at',{ascending:false}).limit(2000),
+    db.from('private_ai_chat_knowledge').select('conversation_id,source_id')
+  ])
+  if(sources.error)throw sources.error
+  if(maps.error)throw maps.error
+  const bySource=new Map<string,string[]>()
+  for(const m of maps.data||[]){
+    const sid=String(m.source_id),arr=bySource.get(sid)||[]
+    arr.push(String(m.conversation_id));bySource.set(sid,arr)
+  }
+  let rows=(sources.data||[]).map((s:any)=>({...s,conversation_ids:bySource.get(String(s.id))||[]}))
+  if(scope==='chat')rows=conversationId?rows.filter((s:any)=>s.conversation_ids.includes(conversationId)):[]
+  else if(scope==='unassigned')rows=rows.filter((s:any)=>!s.conversation_ids.length)
+  return json({sources:rows,scope,conversation_id:conversationId||null})
+}
+
+async function attachKnowledgeSource(conversationId:string,sourceId:string){
+  if(!conversationId)return false
+  const conv=await db.from('private_ai_conversations').select('id').eq('id',conversationId).maybeSingle()
+  if(conv.error)throw conv.error
+  if(!conv.data)throw new Error('Chat not found')
+  const q=await db.from('private_ai_chat_knowledge').upsert({
+    conversation_id:conversationId,source_id:sourceId
+  },{onConflict:'conversation_id,source_id'})
+  if(q.error)throw q.error
+  return true
 }
 
 async function readKnowledgeSource(id:string) {
@@ -1019,7 +1051,7 @@ async function knowledgeFileCheck(req: Request) {
   })
 }
 
-async function createKnowledgeRecord(title: string, text: string, sourceType = 'paste', metadata: any = {}, fileSha256: string | null = null) {
+async function createKnowledgeRecord(title: string, text: string, sourceType = 'paste', metadata: any = {}, fileSha256: string | null = null, conversationId = '') {
   if (!text.trim()) return json({ error: 'No readable text found.' }, 400)
   if (text.length > 5000000) return json({ error: 'Source exceeds 5,000,000 characters.' }, 413)
   const hash = await contentHash(text)
@@ -1028,7 +1060,10 @@ async function createKnowledgeRecord(title: string, text: string, sourceType = '
     const existing = await db.from('private_ai_knowledge_sources')
       .select('id').eq('content_hash', hash).maybeSingle()
     if (existing.error) throw existing.error
-    if (existing.data) return json({ ok: true, duplicate: true, duplicate_reason:'content_hash', source: await readKnowledgeSource(existing.data.id) })
+    if (existing.data) {
+      const attached=await attachKnowledgeSource(conversationId,existing.data.id)
+      return json({ ok:true,duplicate:true,duplicate_reason:'content_hash',attached,source:await readKnowledgeSource(existing.data.id) })
+    }
   }
 
   const parts = chunkText(text)
@@ -1048,7 +1083,10 @@ async function createKnowledgeRecord(title: string, text: string, sourceType = '
     if (fileSha256 && String((created.error as any)?.code || '') === '23505') {
       const exact = await db.from('private_ai_knowledge_sources')
         .select('id').eq('source_type','file').eq('file_sha256',fileSha256).maybeSingle()
-      if (!exact.error && exact.data) return json({ ok:true, duplicate:true, duplicate_reason:'exact_sha256', source:await readKnowledgeSource(exact.data.id) })
+      if (!exact.error && exact.data) {
+        const attached=await attachKnowledgeSource(conversationId,exact.data.id)
+        return json({ok:true,duplicate:true,duplicate_reason:'exact_sha256',attached,source:await readKnowledgeSource(exact.data.id)})
+      }
     }
     throw created.error
   }
@@ -1064,7 +1102,8 @@ async function createKnowledgeRecord(title: string, text: string, sourceType = '
     if (ins.error) throw ins.error
   }
   await db.from('private_ai_knowledge_sources').update({ status:'processing', updated_at:new Date().toISOString() }).eq('id',created.data.id)
-  return json({ ok:true, duplicate:false, source_id:created.data.id, chunk_count:parts.length, background:true })
+  await attachKnowledgeSource(conversationId,created.data.id)
+  return json({ ok:true, duplicate:false, source_id:created.data.id, chunk_count:parts.length, background:true, attached_to_chat:Boolean(conversationId) })
 }
 
 async function knowledgeCreate(req: Request) {
@@ -1072,6 +1111,8 @@ async function knowledgeCreate(req: Request) {
   const title=String(body?.title || 'Untitled')
   const sourceType=String(body?.source_type || 'paste')
   const metadata=body?.metadata || {}
+  const conversationId=String(body?.conversation_id||'').trim()
+  if(!conversationId)return json({error:'Open or create a chat before adding chat-only Knowledge.'},400)
   const part=Math.max(1,Number(metadata?.part||1))
   const fileSha=sourceType==='file' && part===1 ? String(metadata?.file_sha256||'').toLowerCase().trim() : ''
   if(fileSha){
@@ -1084,7 +1125,8 @@ async function knowledgeCreate(req: Request) {
           .select('id').maybeSingle()
         if(!claimed.error && claimed.data){found.source=(await readKnowledgeSource(claimed.data.id))||found.source;found.reason='legacy_upgraded_to_sha256'}
       }
-      return json({ok:true,duplicate:true,duplicate_reason:found.reason,source:found.source})
+      const attached=await attachKnowledgeSource(conversationId,String(found.source.id))
+      return json({ok:true,duplicate:true,duplicate_reason:found.reason,attached,source:found.source})
     }
   }
   let text=String(body?.text || '')
@@ -1096,7 +1138,7 @@ async function knowledgeCreate(req: Request) {
     metadata.raw_segment_chars=before
     metadata.cleaned_segment_chars=text.length
   }
-  return createKnowledgeRecord(title,text,sourceType,metadata,fileSha||null)
+  return createKnowledgeRecord(title,text,sourceType,metadata,fileSha||null,conversationId)
 }
 
 async function knowledgeMediaCreate(req: Request) {
@@ -1108,6 +1150,8 @@ async function knowledgeMediaCreate(req: Request) {
   const sha=String(body?.sha256||'').toLowerCase().trim()
   const mode=String(body?.mode||'full').toLowerCase()==='transcript'?'transcript':'full'
   const collection=String(body?.collection||'').trim().slice(0,80)
+  const conversationId=String(body?.conversation_id||'').trim()
+  if(!conversationId)return json({error:'Open or create a chat before adding chat-only Knowledge.'},400)
   if(!path.startsWith('uploads/'))return json({error:'Invalid private media path.'},400)
   if(!/^[a-f0-9]{64}$/.test(sha))return json({error:'Valid media fingerprint required.'},400)
   if(!Number.isFinite(size)||size<=0||size>104857600)return json({error:'Media must be between 1 byte and 100 MB.'},413)
@@ -1115,7 +1159,10 @@ async function knowledgeMediaCreate(req: Request) {
   if(!sourceType)return json({error:'Only video or audio files are supported here.'},415)
 
   const found=await findDuplicateFile(sha,title,size)
-  if(found)return json({ok:true,duplicate:true,duplicate_reason:found.reason,source:found.source})
+  if(found){
+    const attached=await attachKnowledgeSource(conversationId,String(found.source.id))
+    return json({ok:true,duplicate:true,duplicate_reason:found.reason,attached,source:found.source})
+  }
 
   const created=await db.from('private_ai_knowledge_sources').insert({
     title,
@@ -1142,11 +1189,15 @@ async function knowledgeMediaCreate(req: Request) {
   if(created.error){
     if(String((created.error as any)?.code||'')==='23505'){
       const exact=await db.from('private_ai_knowledge_sources').select('id').eq('file_sha256',sha).maybeSingle()
-      if(!exact.error&&exact.data)return json({ok:true,duplicate:true,duplicate_reason:'exact_sha256',source:await readKnowledgeSource(exact.data.id)})
+      if(!exact.error&&exact.data){
+        await attachKnowledgeSource(conversationId,exact.data.id)
+        return json({ok:true,duplicate:true,duplicate_reason:'exact_sha256',attached:true,source:await readKnowledgeSource(exact.data.id)})
+      }
     }
     throw created.error
   }
 
+  await attachKnowledgeSource(conversationId,created.data.id)
   const job=await db.rpc('private_ai_enqueue_job',{job:{
     type:'process_media_source',
     source_id:created.data.id,
@@ -1158,9 +1209,33 @@ async function knowledgeMediaCreate(req: Request) {
 async function knowledgeUrlCreate(req: Request) {
   const body = await req.json().catch(() => ({}))
   const url = String(body?.url || '').trim()
+  const conversationId=String(body?.conversation_id||'').trim()
+  if(!conversationId)return json({error:'Open or create a chat before adding chat-only Knowledge.'},400)
   if (!url) return json({ error:'URL is required.' },400)
   const page = await fetchReadablePage(url)
-  return createKnowledgeRecord(page.title || new URL(page.url).hostname, page.text, 'website', { url:page.url, collection:String(body?.collection || '').trim().slice(0,80) })
+  return createKnowledgeRecord(page.title || new URL(page.url).hostname, page.text, 'website', { url:page.url, collection:String(body?.collection || '').trim().slice(0,80) }, null, conversationId)
+}
+
+async function backupExport() {
+  const [conversations,messages,memories,sources,chunks,mappings]=await Promise.all([
+    db.from('private_ai_conversations_read').select('*').order('created_at'),
+    db.from('private_ai_messages_read').select('*').order('created_at'),
+    db.from('private_ai_memories_read').select('id,memory_key,content,category,importance,confidence,active,pinned,source_conversation_id,source_message_id,created_at,updated_at').order('created_at'),
+    db.from('private_ai_knowledge_sources_read').select('*').order('created_at'),
+    db.from('private_ai_knowledge_chunks_read').select('id,source_id,chunk_index,content,content_hash,created_at').order('source_id').order('chunk_index'),
+    db.from('private_ai_chat_knowledge').select('conversation_id,source_id,attached_at').order('attached_at'),
+  ])
+  for(const q of [conversations,messages,memories,sources,chunks,mappings])if(q.error)throw q.error
+  return json({
+    format:'uncensor-ai-backup-v1',
+    exported_at:new Date().toISOString(),
+    conversations:conversations.data||[],
+    messages:messages.data||[],
+    memories:memories.data||[],
+    knowledge_sources:sources.data||[],
+    knowledge_chunks:chunks.data||[],
+    chat_knowledge:mappings.data||[],
+  })
 }
 
 async function healthRoute() {
@@ -1221,11 +1296,12 @@ Deno.serve(async (req) => {
     if (path === '/api/sessions' && req.method === 'GET') return listDeviceSessions()
     if (path === '/api/session/pairing-code' && req.method === 'POST') return issuePairingCode(req)
     if (path === '/api/security/recovery-key/rotate' && req.method === 'POST') return rotateRecoveryKey(req)
+    if (path === '/api/backup/export' && req.method === 'GET') return backupExport()
     if (path === '/api/uploads/sign' && req.method === 'POST') return signUpload(req)
     if (path === '/api/uploads/discard' && req.method === 'POST') return discardUpload(req)
     if (path === '/api/conversations' && req.method === 'GET') return listConversations()
     if (path === '/api/memories') return memoriesRoute(req)
-    if (path === '/api/knowledge' && req.method === 'GET') return knowledgeList()
+    if (path === '/api/knowledge' && req.method === 'GET') return knowledgeList(req)
     if (path === '/api/knowledge/file-check' && req.method === 'POST') return knowledgeFileCheck(req)
     if (path === '/api/knowledge' && req.method === 'POST') return knowledgeCreate(req)
     if (path === '/api/knowledge/url' && req.method === 'POST') return knowledgeUrlCreate(req)
@@ -1247,6 +1323,16 @@ Deno.serve(async (req) => {
       }
     }
 
+    const attachSource=path.match(/^\/api\/knowledge\/([^/]+)\/attach$/)
+    if(attachSource&&req.method==='POST'){
+      const id=decodeURIComponent(attachSource[1])
+      const body=await req.json().catch(()=>({}))
+      const conversationId=String(body?.conversation_id||'').trim()
+      if(!conversationId)return json({error:'conversation_id is required'},400)
+      await attachKnowledgeSource(conversationId,id)
+      return json({ok:true,attached:true})
+    }
+
     const source = path.match(/^\/api\/knowledge\/([^/]+)$/)
     if (source) {
       const id = decodeURIComponent(source[1])
@@ -1261,6 +1347,12 @@ Deno.serve(async (req) => {
         return json({ ok: true, source: read })
       }
       if (req.method === 'DELETE') {
+        const conversationId=String(new URL(req.url).searchParams.get('conversation_id')||'').trim()
+        if(conversationId){
+          const q=await db.from('private_ai_chat_knowledge').delete().eq('conversation_id',conversationId).eq('source_id',id)
+          if(q.error)throw q.error
+          return json({ok:true,removed_from_chat:true})
+        }
         const existing=await readKnowledgeSource(id)
         const storagePath=String(existing?.metadata?.storage_path||'')
         const q = await db.from('private_ai_knowledge_sources').delete().eq('id', id)
