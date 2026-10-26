@@ -154,3 +154,15 @@
   .knowledge-switch{width:100%;justify-content:space-between;border-top:1px solid #202938;padding-top:10px}
   .knowledge-switch-label{font-size:10px}
 }
+
+/* v29 stability diagnostics */
+.diagnostics-card{border:1px solid #283244;background:#0b1018;border-radius:12px;padding:11px;display:flex;flex-direction:column;gap:9px}
+.diagnostics-card>div:first-child strong{display:block;font-size:10px;color:#edf4ff}
+.diagnostics-card>div:first-child small{display:block;margin-top:4px;color:#7f8ea4;font-size:8px;line-height:1.45}
+.diagnostics-summary-row{margin:0}
+.diagnostics-detail{border:1px solid #273142;border-radius:10px;background:#090e15;overflow:hidden}
+.diagnostic-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 9px;border-bottom:1px solid #1d2633;font-size:9px}
+.diagnostic-row:last-child{border-bottom:0}.diagnostic-row>span{min-width:0;color:#a7b3c5;display:flex;flex-direction:column;gap:2px}
+.diagnostic-row small{color:#69788e;font-size:8px;overflow-wrap:anywhere}.diagnostic-row strong{font-size:8px;letter-spacing:.08em;color:#8d99aa}
+.diagnostic-row.ok strong{color:#78e3ac}.diagnostic-row.bad strong{color:#ff9a9f}.diagnostic-error{padding:9px;color:#ff9a9f;font-size:9px;border-top:1px solid #2c2329}
+.client-error-log{border-top:1px solid #222c39;padding:8px 9px;color:#8593a7;font-size:8px}.client-error-log summary{cursor:pointer;color:#aab7ca}.client-error-log>div{padding:6px 0;border-top:1px solid #1d2633}.client-error-log small{display:block;color:#5f6d80;margin-top:2px}
