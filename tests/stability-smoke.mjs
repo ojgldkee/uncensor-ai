@@ -34,6 +34,6 @@ for(const [name,text] of [['app.js',app],['index.html',html],['config.js',config
 }
 
 expect(app.includes('citedRefs.has(String(s.ref))'),'Only cited sources should appear as chips');
-expect(app.includes('node.replaceWith(finalized)'),'Streaming responses must render final cited sources');
+expect(app.includes('refreshFinishedRun(run)'),'Streaming responses must refresh the completed cited answer');
 
 console.log('Stability smoke tests passed');
