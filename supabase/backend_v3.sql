@@ -971,3 +971,10 @@ select cron.schedule(
   '10 seconds',
   $$ select public.private_ai_dispatch_worker(); $$
 );
+
+
+-- Trigger helpers are invoked by PostgreSQL triggers only; never expose them through RPC.
+revoke all on function public.private_ai_encrypt_message_content() from public,anon,authenticated;
+revoke all on function public.private_ai_encrypt_memory_content() from public,anon,authenticated;
+revoke all on function public.private_ai_encrypt_conversation_summary() from public,anon,authenticated;
+revoke all on function public.private_ai_encrypt_chunk_content() from public,anon,authenticated;
