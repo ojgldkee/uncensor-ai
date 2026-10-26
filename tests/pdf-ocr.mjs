@@ -54,6 +54,7 @@ ctx.loadPdfJs=async()=>({
 
 assert.equal(ctx.needsPdfOcr('Only a heading'),true);
 assert.equal(ctx.needsPdfOcr(nativeText),false);
+assert.ok(code.includes("tag.integrity='sha384-"),'Third-party OCR script must have integrity pinning');
 const stages=[];
 const result=await ctx.extractKnowledgePdf({arrayBuffer:async()=>new ArrayBuffer(100)},(page,total,stage,stats)=>{
   stages.push({page,total,stage,ocrPages:stats.ocrPages});
