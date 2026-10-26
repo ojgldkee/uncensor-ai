@@ -964,7 +964,7 @@ async function knowledgeList(req: Request) {
   const scope=String(url.searchParams.get('scope')||'chat')
   const [sources,maps]=await Promise.all([
     db.from('private_ai_knowledge_sources_read')
-      .select('id,title,source_type,enabled,content_hash,file_sha256,char_count,chunk_count,embedded_chunk_count,status,failure_count,last_error,metadata,created_at,updated_at,completed_at')
+      .select('id,title,source_type,enabled,global_enabled,content_hash,file_sha256,char_count,chunk_count,embedded_chunk_count,status,failure_count,last_error,metadata,created_at,updated_at,completed_at')
       .order('created_at',{ascending:false}).limit(2000),
     db.from('private_ai_chat_knowledge').select('conversation_id,source_id')
   ])
@@ -977,7 +977,8 @@ async function knowledgeList(req: Request) {
   }
   let rows=(sources.data||[]).map((s:any)=>({...s,conversation_ids:bySource.get(String(s.id))||[]}))
   if(scope==='chat')rows=conversationId?rows.filter((s:any)=>s.conversation_ids.includes(conversationId)):[]
-  else if(scope==='unassigned')rows=rows.filter((s:any)=>!s.conversation_ids.length)
+  else if(scope==='global')rows=rows.filter((s:any)=>s.global_enabled===true)
+  else if(scope==='unassigned')rows=rows.filter((s:any)=>!s.global_enabled&&!s.conversation_ids.length)
   return json({sources:rows,scope,conversation_id:conversationId||null})
 }
 
@@ -1002,10 +1003,52 @@ async function attachKnowledgeSource(conversationId:string,sourceId:string){
   if(q.error)throw q.error
   return true
 }
+async function groupedKnowledgeIds(sourceId:string){
+  const source=await readKnowledgeSource(sourceId)
+  const group=String(source?.metadata?.file_group||'')
+  if(!group)return [sourceId]
+  const all=await db.from('private_ai_knowledge_sources_read').select('id,metadata').limit(2000)
+  if(all.error)throw all.error
+  const ids=(all.data||[]).filter((x:any)=>String(x?.metadata?.file_group||'')===group).map((x:any)=>String(x.id))
+  return ids.length?ids:[sourceId]
+}
+
+async function moveKnowledgeSource(sourceId:string,target:string,conversationId=''){
+  const ids=await groupedKnowledgeIds(sourceId)
+  if(target==='global'){
+    const u=await db.from('private_ai_knowledge_sources').update({global_enabled:true,updated_at:new Date().toISOString()}).in('id',ids)
+    if(u.error)throw u.error
+    const d=await db.from('private_ai_chat_knowledge').delete().in('source_id',ids)
+    if(d.error)throw d.error
+    return
+  }
+  if(target==='chat'){
+    if(!conversationId)throw new Error('conversation_id is required')
+    const conv=await db.from('private_ai_conversations').select('id').eq('id',conversationId).maybeSingle()
+    if(conv.error)throw conv.error
+    if(!conv.data)throw new Error('Chat not found')
+    const u=await db.from('private_ai_knowledge_sources').update({global_enabled:false,updated_at:new Date().toISOString()}).in('id',ids)
+    if(u.error)throw u.error
+    const clear=await db.from('private_ai_chat_knowledge').delete().in('source_id',ids)
+    if(clear.error)throw clear.error
+    const rows=ids.map(id=>({conversation_id:conversationId,source_id:id}))
+    const ins=await db.from('private_ai_chat_knowledge').insert(rows)
+    if(ins.error)throw ins.error
+    return
+  }
+  if(target==='unassigned'){
+    const u=await db.from('private_ai_knowledge_sources').update({global_enabled:false,updated_at:new Date().toISOString()}).in('id',ids)
+    if(u.error)throw u.error
+    const d=await db.from('private_ai_chat_knowledge').delete().in('source_id',ids)
+    if(d.error)throw d.error
+    return
+  }
+  throw new Error('Invalid Knowledge target')
+}
 
 async function readKnowledgeSource(id:string) {
   const q=await db.from('private_ai_knowledge_sources_read')
-    .select('id,title,status,chunk_count,embedded_chunk_count,file_sha256,metadata,source_type,enabled,char_count,created_at,updated_at')
+    .select('id,title,status,chunk_count,embedded_chunk_count,file_sha256,metadata,source_type,enabled,global_enabled,char_count,created_at,updated_at')
     .eq('id',id).maybeSingle()
   if(q.error)throw q.error
   return q.data
@@ -1331,6 +1374,16 @@ Deno.serve(async (req) => {
         if (d.error) throw d.error
         return json({ ok: true, permanent: true })
       }
+    }
+
+    const moveSource=path.match(/^\/api\/knowledge\/([^/]+)\/move$/)
+    if(moveSource&&req.method==='POST'){
+      const id=decodeURIComponent(moveSource[1])
+      const body=await req.json().catch(()=>({}))
+      const target=String(body?.target||'').trim()
+      const conversationId=String(body?.conversation_id||'').trim()
+      await moveKnowledgeSource(id,target,conversationId)
+      return json({ok:true,target})
     }
 
     const attachSource=path.match(/^\/api\/knowledge\/([^/]+)\/attach$/)
