@@ -1356,17 +1356,19 @@ async function knowledgeMediaCreate(req: Request) {
     throw created.error
   }
 
-  await attachKnowledgeSource(conversationId,created.data.id)
-  const job=await db.rpc('private_ai_enqueue_job',{job:{
-    type:'process_media_source',
-    source_id:created.data.id,
-  }})
-  if(job.error){
+  try{
+    await attachKnowledgeSource(conversationId,created.data.id)
+    const job=await db.rpc('private_ai_enqueue_job',{job:{
+      type:'process_media_source',
+      source_id:created.data.id,
+    }})
+    if(job.error)throw job.error
+    return json({ok:true,duplicate:false,source_id:created.data.id,background:true,status:'processing'})
+  }catch(e){
     await db.from('private_ai_knowledge_sources').delete().eq('id',created.data.id)
     await db.storage.from(ATTACHMENT_BUCKET).remove([path])
-    throw job.error
+    throw e
   }
-  return json({ok:true,duplicate:false,source_id:created.data.id,background:true,status:'processing'})
 }
 
 async function knowledgeUrlCreate(req: Request) {
