@@ -595,7 +595,7 @@ async function ingestKnowledgeMedia(){
     }
     row.sourceIds=[created.source_id];
     setKnowledgeFileStatus(row,'processing',52,'Safe to close this browser — processing continues on the server','processing');
-    $('knowledgeMediaFile').value='';previewKnowledgeMedia(null);
+    $('knowledgeMediaFile').value='';setFilePickerLabel('knowledgeMediaFile','knowledgeMediaFileLabel');previewKnowledgeMedia(null);
     await loadKnowledge();switchKnowledgeTab('library');toast('Media uploaded. Building timestamped Knowledge in the background.',4500);
   }catch(e){
     setKnowledgeFileStatus(row,'failed',100,e.message||'Media upload failed','failed');toast(e.message||'Media upload failed',4500);
@@ -670,7 +670,7 @@ async function ingestFileKnowledge(){
         setKnowledgeFileStatus(row,'failed',100,e.message||'File failed','failed');
       }
     }
-    $('knowledgeFile').value='';
+    $('knowledgeFile').value='';setFilePickerLabel('knowledgeFile','knowledgeTextFileLabel');
     await loadKnowledge();
     switchKnowledgeTab('library');
     if(duplicates&&duplicates===files.length)toast('All selected files were already in your library.',4000);
