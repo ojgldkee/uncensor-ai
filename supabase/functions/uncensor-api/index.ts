@@ -26,7 +26,7 @@ const CORS = {
   'access-control-allow-headers': 'content-type,x-uncensor-key,x-uncensor-session',
   'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS',
 }
-const JSON_HEADERS = { ...CORS, 'content-type': 'application/json; charset=utf-8' }
+const JSON_HEADERS = { ...CORS, 'content-type': 'application/json; charset=utf-8', 'cache-control':'no-store, max-age=0', 'pragma':'no-cache', 'x-content-type-options':'nosniff', 'referrer-policy':'no-referrer' }
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: JSON_HEADERS })
 
 function pathOf(req: Request) {
@@ -77,6 +77,9 @@ async function rotateRecoveryKey(req:Request) {
 }
 
 async function enrollDevice(req: Request) {
+  const limited=await db.rpc('private_ai_take_enrollment_limit',{minute_limit:6})
+  if(limited.error)return json({error:'Enrollment limiter unavailable.'},503)
+  if(limited.data!==true)return json({error:'Too many enrollment attempts. Try again in a minute.',rate_limited:true},429)
   const candidate = req.headers.get('x-uncensor-key') || ''
   if (!candidate) return json({ error:'Master access key required.', requires_access_key:true },401)
   const body = await req.json().catch(()=>({}))
