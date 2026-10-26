@@ -1509,3 +1509,50 @@ revoke all on function public.private_ai_issue_pairing_code(text) from public,an
 revoke all on function public.private_ai_redeem_pairing_code(text,text) from public,anon,authenticated;
 grant execute on function public.private_ai_issue_pairing_code(text) to service_role;
 grant execute on function public.private_ai_redeem_pairing_code(text,text) to service_role;
+
+
+-- v7 chat-only Knowledge assignments.
+create table if not exists public.private_ai_chat_knowledge (
+  conversation_id uuid not null references public.private_ai_conversations(id) on delete cascade,
+  source_id uuid not null references public.private_ai_knowledge_sources(id) on delete cascade,
+  attached_at timestamptz not null default now(),
+  primary key(conversation_id,source_id)
+);
+alter table public.private_ai_chat_knowledge enable row level security;
+revoke all on table public.private_ai_chat_knowledge from anon,authenticated;
+grant select,insert,update,delete on table public.private_ai_chat_knowledge to service_role;
+create index if not exists private_ai_chat_knowledge_source_idx on public.private_ai_chat_knowledge(source_id);
+
+create or replace function public.private_ai_match_chunks_for_chat(
+  query_embedding extensions.vector(384),
+  target_conversation_id uuid,
+  match_count integer default 10,
+  similarity_threshold double precision default 0.25
+)
+returns table (
+  id bigint,
+  source_id uuid,
+  title text,
+  content text,
+  chunk_index integer,
+  similarity double precision
+)
+language sql stable
+set search_path=''
+as $$
+  select c.id,c.source_id,
+         public.private_ai_decrypt_text(s.title) as title,
+         public.private_ai_decrypt_text(c.content) as content,
+         c.chunk_index,
+         1-(c.embedding OPERATOR(extensions.<=>) query_embedding) as similarity
+  from public.private_ai_knowledge_chunks c
+  join public.private_ai_knowledge_sources s on s.id=c.source_id
+  join public.private_ai_chat_knowledge ck on ck.source_id=s.id
+  where ck.conversation_id=target_conversation_id
+    and s.status='ready' and s.enabled=true and c.embedding is not null
+    and 1-(c.embedding OPERATOR(extensions.<=>) query_embedding)>=similarity_threshold
+  order by c.embedding OPERATOR(extensions.<=>) query_embedding
+  limit greatest(1,least(match_count,30));
+$$;
+revoke all on function public.private_ai_match_chunks_for_chat(extensions.vector,uuid,integer,double precision) from public,anon,authenticated;
+grant execute on function public.private_ai_match_chunks_for_chat(extensions.vector,uuid,integer,double precision) to service_role;
