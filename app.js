@@ -1,6 +1,6 @@
 const $=id=>document.getElementById(id);
 const DEFAULT_STYLE='Be direct, specific, intellectually curious, and nonjudgmental. Do not avoid a topic merely because it is controversial, sensitive, adult, or unconventional. Correct false premises, distinguish facts from uncertainty, and give useful specifics. If the exact request cannot be fulfilled, give the closest useful answer instead of boilerplate.';
-const state={conversations:[],activeId:null,activeConversation:null,messages:[],knowledge:[],knowledgeScope:'global',knowledgeLoadSeq:0,moveKnowledgeSource:null,renameChatTarget:null,memories:[],pendingAttachments:[],knowledgeFileUploads:[],knowledgePollTimer:null,webResearch:localStorage.getItem('uncensor.webResearch')==='true',webResearchEnabled:false,sending:false,abort:null,knowledgeEnabled:localStorage.getItem('uncensor.knowledge')!=='false',showSources:localStorage.getItem('uncensor.sources')!=='false',mode:localStorage.getItem('uncensor.mode')||'direct',style:localStorage.getItem('uncensor.style')||DEFAULT_STYLE};
+const state={conversations:[],activeId:null,activeConversation:null,messages:[],knowledge:[],knowledgeScope:'global',knowledgeLoadSeq:0,knowledgeSelected:new Set(),knowledgeVisibleIds:[],moveKnowledgeSources:[],renameChatTarget:null,memories:[],pendingAttachments:[],knowledgeFileUploads:[],knowledgePollTimer:null,webResearch:localStorage.getItem('uncensor.webResearch')==='true',webResearchEnabled:false,sending:false,abort:null,knowledgeEnabled:localStorage.getItem('uncensor.knowledge')!=='false',showSources:localStorage.getItem('uncensor.sources')!=='false',mode:localStorage.getItem('uncensor.mode')||'direct',style:localStorage.getItem('uncensor.style')||DEFAULT_STYLE};
 
 function esc(v){return String(v||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
 function md(v){let s=esc(v);s=s.replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h1>$1</h1>');s=s.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>');return s.split(/\n{2,}/).map(p=>/^<h\d/.test(p)?p:'<p>'+p.replace(/\n/g,'<br>')+'</p>').join('');}
@@ -322,8 +322,10 @@ function syncKnowledgeScopeUI(){
     : 'Send one message first so this chat exists, then add specialist Knowledge to it.';
 }
 function switchKnowledgeTab(tab){
+  const prevScope=state.knowledgeScope;
   if(tab==='global'||(!state.activeId&&tab==='library'))state.knowledgeScope='global';
   else if(tab==='library')state.knowledgeScope='chat';
+  if(prevScope!==state.knowledgeScope)state.knowledgeSelected.clear();
   const library=tab!=='add';
   $('knowledgeLibraryPanel').classList.toggle('hidden',!library);
   $('knowledgeAddPanel').classList.toggle('hidden',library);
@@ -331,9 +333,33 @@ function switchKnowledgeTab(tab){
   syncKnowledgeScopeUI();
   if(library){loadKnowledge();setTimeout(()=>$('knowledgeSearch').focus(),40);}
 }
-function openMoveKnowledge(source){
-  state.moveKnowledgeSource=source;
-  $('moveKnowledgeSourceName').textContent='Move “'+String(source.title||'Untitled')+'” to Global Knowledge or a specific chat.';
+function syncKnowledgeBulkUI(){
+  const selected=state.knowledgeSelected.size,visible=state.knowledgeVisibleIds||[];
+  const allVisible=visible.length>0&&visible.every(id=>state.knowledgeSelected.has(id));
+  const someVisible=visible.some(id=>state.knowledgeSelected.has(id));
+  $('knowledgeBulkCount').textContent=selected+' selected';
+  $('bulkMoveKnowledge').disabled=selected===0;
+  $('clearKnowledgeSelection').disabled=selected===0;
+  $('knowledgeSelectAll').checked=allVisible;
+  $('knowledgeSelectAll').indeterminate=!allVisible&&someVisible;
+}
+function clearKnowledgeSelection(render=true){
+  state.knowledgeSelected.clear();syncKnowledgeBulkUI();if(render)renderKnowledge();
+}
+function toggleAllVisibleKnowledge(checked){
+  for(const id of state.knowledgeVisibleIds||[]){
+    if(checked)state.knowledgeSelected.add(id);else state.knowledgeSelected.delete(id);
+  }
+  renderKnowledge();
+}
+function openMoveKnowledgeMany(sources){
+  const list=(sources||[]).filter(Boolean);if(!list.length)return;
+  state.moveKnowledgeSources=list;
+  const count=list.length;
+  $('moveKnowledgeTitle').textContent=count===1?'Move Knowledge source':'Move '+count+' Knowledge sources';
+  $('moveKnowledgeSourceName').textContent=count===1
+    ? 'Move “'+String(list[0].title||'Untitled')+'” to Global Knowledge or a specific chat.'
+    : 'Move all '+count+' selected sources together. Large multi-part files stay grouped automatically.';
   const sel=$('moveKnowledgeDestination');sel.innerHTML='';
   const add=(value,label)=>{const o=document.createElement('option');o.value=value;o.textContent=label;sel.append(o);};
   add('global','Global · available in every chat');
@@ -342,23 +368,37 @@ function openMoveKnowledge(source){
     if(chat.id===state.activeId)continue;
     add('chat:'+chat.id,'Chat · '+String(chat.title||'New chat'));
   }
-  sel.value=source.global_enabled===true&&state.activeId?'chat:'+state.activeId:'global';
+  const allGlobal=list.every(x=>x.global_enabled===true||!(x.conversation_ids||[]).length);
+  sel.value=allGlobal&&state.activeId?'chat:'+state.activeId:'global';
+  $('confirmMoveKnowledge').textContent=count===1?'Move source':'Move '+count+' sources';
   openModal('moveKnowledgeModal');
 }
+function openMoveKnowledge(source){openMoveKnowledgeMany([source]);}
+function openBulkMoveKnowledge(){
+  const all=knowledgeLogicalSources(state.knowledge||[]);
+  openMoveKnowledgeMany(all.filter(x=>state.knowledgeSelected.has(String(x.id))));
+}
 async function confirmMoveKnowledge(){
-  const source=state.moveKnowledgeSource;if(!source)return;
+  const sources=state.moveKnowledgeSources||[];if(!sources.length)return;
   const dest=$('moveKnowledgeDestination').value;
   const target=dest.startsWith('chat:')?'chat':'global';
   const conversationId=dest.startsWith('chat:')?dest.slice(5):'';
   const btn=$('confirmMoveKnowledge');btn.disabled=true;
   try{
-    await api('/api/knowledge/'+encodeURIComponent(source.id)+'/move',{method:'POST',body:JSON.stringify({target,conversation_id:conversationId})});
+    const d=await api('/api/knowledge/bulk-move',{method:'POST',body:JSON.stringify({
+      source_ids:sources.map(x=>x.id),target,conversation_id:conversationId
+    })});
     closeModal('moveKnowledgeModal');
+    state.moveKnowledgeSources=[];
+    state.knowledgeSelected.clear();
     state.knowledgeScope=target==='global'?'global':(conversationId===state.activeId?'chat':state.knowledgeScope);
     await loadKnowledge();syncKnowledgeScopeUI();
-    toast(target==='global'?'Moved to Global Knowledge':'Moved to '+($('moveKnowledgeDestination').selectedOptions[0]?.textContent||'chat'),4000);
-  }catch(e){toast(e.message||'Could not move source',4500);}
-  finally{btn.disabled=false;}
+    const count=Number(d.logical_count||sources.length);
+    toast(target==='global'
+      ? 'Moved '+count+' source'+(count===1?'':'s')+' to Global Knowledge'
+      : 'Moved '+count+' source'+(count===1?'':'s')+' to '+($('moveKnowledgeDestination').selectedOptions[0]?.textContent||'chat'),4500);
+  }catch(e){toast(e.message||'Could not move selected sources',4500);}
+  finally{btn.disabled=false;$('confirmMoveKnowledge').textContent='Move source';}
 }
 
 function renderKnowledge(){
@@ -367,6 +407,8 @@ function renderKnowledge(){
   const type=$('knowledgeTypeFilter').value;
   const statusFilter=$('knowledgeStatusFilter').value;
   const raw=state.knowledge||[],all=knowledgeLogicalSources(raw);
+  const allIds=new Set(all.map(x=>String(x.id)));
+  for(const id of [...state.knowledgeSelected])if(!allIds.has(id))state.knowledgeSelected.delete(id);
   $('knowledgeCount').textContent=all.length+' source'+(all.length===1?'':'s');
   $('knowledgeTotalSources').textContent=all.length.toLocaleString();
   $('knowledgeReadySources').textContent=all.filter(x=>x.status==='ready').length.toLocaleString();
@@ -378,6 +420,8 @@ function renderKnowledge(){
     const matchesStatus=statusFilter==='all'||String(x.status||'')===statusFilter;
     return matchesQ&&matchesType&&matchesStatus;
   });
+  state.knowledgeVisibleIds=rows.map(x=>String(x.id));
+  syncKnowledgeBulkUI();
   if(!rows.length){
     root.innerHTML='<div class="knowledge-empty"><div class="knowledge-empty-icon">▤</div><strong>'+(all.length?'No matching sources':(state.knowledgeScope==='chat'?'This chat has no usable Knowledge yet':'No Global Knowledge yet'))+'</strong><p>'+(all.length?'Try a different search or filter.':(state.knowledgeScope==='chat'?'Add specialist sources here or move general sources to Global.':'Sources without a specific chat assignment appear here automatically.'))+'</p>'+(all.length||state.knowledgeScope!=='chat'?'':'<button id="emptyAddKnowledge" class="primary-btn">＋ Add source to this chat</button>')+'</div>';
     const b=$('emptyAddKnowledge');if(b)b.onclick=()=>switchKnowledgeTab('add');
@@ -394,9 +438,11 @@ function renderKnowledge(){
     const baseDetail=media?(formatBytes(Number(meta.file_size||0))+mediaDetail):(Number(x.char_count||0).toLocaleString()+' chars · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks');
     const globalSource=x.global_enabled===true||!(x.conversation_ids||[]).length;
     const scopeBadge='<span class="knowledge-scope-chip '+(globalSource?'global':'chat')+'">'+(globalSource?'GLOBAL':'CHAT ONLY')+'</span>';
-    const el=document.createElement('div');el.className='knowledge-item knowledge-library-item'+(x.enabled===false?' disabled':'');
-    el.innerHTML='<div class="knowledge-item-main"><div class="knowledge-source-icon">'+typeIcon+'</div><div class="knowledge-source-copy"><div class="knowledge-source-title-row"><strong>'+esc(x.title||'Untitled')+'</strong>'+scopeBadge+(collection?'<span class="knowledge-collection-chip">'+esc(collection)+'</span>':'')+'</div><small>'+typeLabel+(partCount>1?' · '+partCount+' segments':'')+' · '+baseDetail+' · '+esc(status)+'</small>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'</div></div><div class="knowledge-actions"><button class="move-source" title="Move between Global and specialist chats">Move</button><button class="toggle" title="'+(x.enabled===false?'Enable':'Disable')+'">'+(x.enabled===false?'○':'●')+'</button><button class="rename" title="Rename">✎</button>'+((state.knowledgeScope==='chat'&&globalSource)?'':'<button class="delete danger-hover" title="'+(state.knowledgeScope==='chat'?'Remove from this chat':'Delete permanently')+'">×</button>')+'</div>';
+    const selected=state.knowledgeSelected.has(String(x.id));
+    const el=document.createElement('div');el.className='knowledge-item knowledge-library-item'+(x.enabled===false?' disabled':'')+(selected?' selected':'');
+    el.innerHTML='<label class="knowledge-row-select" title="Select source"><input class="select-source" type="checkbox" '+(selected?'checked':'')+' /></label><div class="knowledge-item-main"><div class="knowledge-source-icon">'+typeIcon+'</div><div class="knowledge-source-copy"><div class="knowledge-source-title-row"><strong>'+esc(x.title||'Untitled')+'</strong>'+scopeBadge+(collection?'<span class="knowledge-collection-chip">'+esc(collection)+'</span>':'')+'</div><small>'+typeLabel+(partCount>1?' · '+partCount+' segments':'')+' · '+baseDetail+' · '+esc(status)+'</small>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'</div></div><div class="knowledge-actions"><button class="move-source" title="Move between Global and specialist chats">Move</button><button class="toggle" title="'+(x.enabled===false?'Enable':'Disable')+'">'+(x.enabled===false?'○':'●')+'</button><button class="rename" title="Rename">✎</button>'+((state.knowledgeScope==='chat'&&globalSource)?'':'<button class="delete danger-hover" title="'+(state.knowledgeScope==='chat'?'Remove from this chat':'Delete permanently')+'">×</button>')+'</div>';
     const items=x._items||[x];
+    el.querySelector('.select-source').onchange=e=>{if(e.target.checked)state.knowledgeSelected.add(String(x.id));else state.knowledgeSelected.delete(String(x.id));renderKnowledge();};
     el.querySelector('.move-source').onclick=()=>openMoveKnowledge(x);
     el.querySelector('.toggle').onclick=async()=>{const value=x.enabled===false;await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id),{method:'PATCH',body:JSON.stringify({enabled:value})})));loadKnowledge();};
     el.querySelector('.rename').onclick=async()=>{const n=prompt('Rename knowledge source',x.title||'');if(n&&n.trim()){await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id),{method:'PATCH',body:JSON.stringify({title:n.trim().slice(0,160)})})));loadKnowledge();}};
@@ -408,18 +454,21 @@ function renderKnowledge(){
 function formatBytes(n){n=Number(n||0);if(n<1024)return n+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';return (n/1048576).toFixed(n<10485760?1:0)+' MB';}
 function renderKnowledgeFileQueue(){
   const root=$('knowledgeFileQueue'),rows=state.knowledgeFileUploads||[];
-  if(!rows.length){root.classList.add('hidden');root.innerHTML='';return;}
+  if(!rows.length){root.classList.add('hidden');root.innerHTML='';setFilePickerLabel('knowledgeFile','knowledgeTextFileLabel');return;}
   root.classList.remove('hidden');
+  const selected=rows.filter(r=>r.status==='selected').length;
   const ready=rows.filter(r=>r.status==='ready').length;
   const duplicates=rows.filter(r=>r.status==='duplicate').length;
   const failed=rows.filter(r=>r.status==='failed').length;
-  const working=rows.length-ready-duplicates-failed;
-  root.innerHTML='<div class="knowledge-upload-summary"><strong>Upload activity</strong><span>'+ready+' ready'+(duplicates?' · '+duplicates+' duplicate'+(duplicates===1?'':'s')+' blocked':'')+(working?' · '+working+' working':'')+(failed?' · '+failed+' failed':'')+'</span></div>';
+  const working=rows.length-selected-ready-duplicates-failed;
+  root.innerHTML='<div class="knowledge-upload-summary"><strong>'+(selected?selected+' file'+(selected===1?'':'s')+' staged':'Upload activity')+'</strong><span>'+(selected?selected+' ready to upload · ':'')+ready+' ready'+(duplicates?' · '+duplicates+' duplicate'+(duplicates===1?'':'s')+' blocked':'')+(working?' · '+working+' working':'')+(failed?' · '+failed+' failed':'')+'</span></div>';
   rows.forEach(r=>{
-    const el=document.createElement('div');el.className='knowledge-upload-row';
-    el.innerHTML='<div class="knowledge-upload-top"><div class="knowledge-upload-name">'+esc(r.name)+'</div><div class="knowledge-upload-state '+esc(r.status)+'">'+esc(r.label||r.status)+'</div></div><div class="knowledge-upload-meta"><span>'+formatBytes(r.size)+'</span><span>'+esc(r.detail||'')+'</span></div><div class="knowledge-upload-bar"><span style="width:'+Math.max(0,Math.min(100,Number(r.pct||0)))+'%"></span></div>';
+    const el=document.createElement('div');el.className='knowledge-upload-row'+(r.status==='selected'?' staged':'');
+    el.innerHTML='<div class="knowledge-upload-top"><div class="knowledge-upload-name">'+esc(r.name)+'</div><div class="knowledge-upload-row-actions"><div class="knowledge-upload-state '+esc(r.status)+'">'+esc(r.label||r.status)+'</div>'+(r.status==='selected'?'<button class="remove-staged" type="button" title="Remove before upload">×</button>':'')+'</div></div><div class="knowledge-upload-meta"><span>'+formatBytes(r.size)+'</span><span>'+esc(r.detail||'')+'</span></div><div class="knowledge-upload-bar"><span style="width:'+Math.max(0,Math.min(100,Number(r.pct||0)))+'%"></span></div>';
+    const remove=el.querySelector('.remove-staged');if(remove)remove.onclick=()=>removeStagedKnowledgeFile(r.id);
     root.append(el);
   });
+  setFilePickerLabel('knowledgeFile','knowledgeTextFileLabel');
 }
 function setKnowledgeFileStatus(row,status,pct,detail,label){
   row.status=status;row.pct=Math.max(0,Math.min(100,Number(pct||0)));row.detail=detail||'';row.label=label||status;
@@ -471,7 +520,28 @@ async function sha256File(file){
   return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 function stageKnowledgeFiles(files){
-  state.knowledgeFileUploads=[...files].map((file,i)=>({id:String(Date.now())+'-'+i,name:file.name,size:file.size,status:'selected',label:'selected',pct:0,detail:'Ready to add',sourceIds:[]}));
+  state.knowledgeFileUploads=[...files].map((file,i)=>({id:String(Date.now())+'-'+i,name:file.name,size:file.size,status:'selected',label:'selected',pct:0,detail:'Ready to add',sourceIds:[],file,signature:file.name+'|'+file.size+'|'+file.lastModified}));
+  renderKnowledgeFileQueue();
+}
+function stageTextKnowledgeFiles(files){
+  const existing=new Set((state.knowledgeFileUploads||[]).filter(r=>r.status==='selected').map(r=>r.signature));
+  let added=0,skipped=0;
+  for(const file of files){
+    const signature=file.name+'|'+file.size+'|'+file.lastModified;
+    if(existing.has(signature)){skipped++;continue;}
+    existing.add(signature);added++;
+    state.knowledgeFileUploads.push({
+      id:(crypto.randomUUID?crypto.randomUUID():String(Date.now())+'-'+Math.random()),
+      name:file.name,size:file.size,status:'selected',label:'staged',pct:0,
+      detail:'Ready to upload with this batch',sourceIds:[],file,signature
+    });
+  }
+  renderKnowledgeFileQueue();
+  if(added)toast(added+' file'+(added===1?'':'s')+' staged'+(skipped?' · '+skipped+' already staged':''),2500);
+  else if(skipped)toast('Those files are already staged.',2500);
+}
+function removeStagedKnowledgeFile(id){
+  state.knowledgeFileUploads=(state.knowledgeFileUploads||[]).filter(r=>r.id!==id||r.status!=='selected');
   renderKnowledgeFileQueue();
 }
 async function loadKnowledge(){
@@ -569,6 +639,13 @@ function signedUploadFile(file,url,onProgress){
 }
 function setFilePickerLabel(inputId,labelId){
   const input=$(inputId),label=$(labelId);if(!input||!label)return;
+  if(inputId==='knowledgeFile'){
+    const staged=(state.knowledgeFileUploads||[]).filter(r=>r.status==='selected').length;
+    label.textContent=staged
+      ? staged+' file'+(staged===1?'':'s')+' staged · click to add more'
+      : 'Select several at once, then choose more anytime · drag & drop works too';
+    return;
+  }
   const files=[...(input.files||[])];
   label.textContent=files.length?(files.length===1?files[0].name:files.length+' files selected'):(input.multiple?'or drag & drop multiple files here · up to 100 MB each':'or drag & drop it here · up to 100 MB');
 }
@@ -580,18 +657,16 @@ function bindFileDropzone(inputId,zoneId,labelId,onFiles){
     if(bad.length)toast('Unsupported archive/binary file: '+bad[0].name+'. Extract ZIPs and upload the TXT/HTML files inside.',5000);
     return good;
   };
-  const sync=()=>{
-    const files=sanitize([...(input.files||[])]);
-    if(files.length!==(input.files||[]).length){const dt=new DataTransfer();for(const file of files)dt.items.add(file);input.files=dt.files;}
-    setFilePickerLabel(inputId,labelId);onFiles&&onFiles(files);
+  const deliver=(files)=>{
+    const good=sanitize(files);if(!good.length){setFilePickerLabel(inputId,labelId);return;}
+    onFiles&&onFiles(good);
+    if(inputId==='knowledgeFile')input.value='';
+    setFilePickerLabel(inputId,labelId);
   };
-  input.addEventListener('change',sync);
+  input.addEventListener('change',()=>deliver([...(input.files||[])]));
   ['dragenter','dragover'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.add('dragging');}));
   ['dragleave','drop'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.remove('dragging');}));
-  zone.addEventListener('drop',e=>{
-    const files=sanitize([...(e.dataTransfer?.files||[])]);if(!files.length)return;
-    const dt=new DataTransfer();for(const file of files)dt.items.add(file);input.files=dt.files;sync();
-  });
+  zone.addEventListener('drop',e=>{deliver([...(e.dataTransfer?.files||[])]);});
 }
 function previewKnowledgeMedia(file){
   const root=$('knowledgeMediaPreview');
@@ -640,20 +715,20 @@ async function ingestKnowledgeMedia(){
 
 async function ingestFileKnowledge(){
   if(!state.activeId){toast('Send one message first so this chat exists, then add file Knowledge.',4500);return;}
-  const files=[...$('knowledgeFile').files];
-  if(!files.length){toast('Choose one or more supported text files first.');return;}
+  const rowsToProcess=(state.knowledgeFileUploads||[]).filter(r=>r.status==='selected'&&r.file);
+  const files=rowsToProcess.map(r=>r.file);
+  if(!files.length){toast('Stage one or more supported text files first.');return;}
   const unsupported=files.find(f=>!isSupportedKnowledgeTextFile(f));
-  if(unsupported){$('knowledgeFile').value='';setFilePickerLabel('knowledgeFile','knowledgeTextFileLabel');state.knowledgeFileUploads=[];renderKnowledgeFileQueue();toast('Cannot index '+unsupported.name+'. Extract ZIP/archive files first and upload the TXT/HTML/JSON files inside.',5000);return;}
+  if(unsupported){toast('Cannot index '+unsupported.name+'. Extract ZIP/archive files first and upload the TXT/HTML/JSON files inside.',5000);return;}
   const maxFileBytes=100*1024*1024;
   const segmentChars=3.5*1024*1024;
   for(const file of files){if(file.size>maxFileBytes){toast(file.name+' is over the 100 MB per-file limit.',4500);return;}}
   const btn=$('saveKnowledgeFiles');btn.disabled=true;
   $('ingestProgress').classList.remove('hidden');
-  stageKnowledgeFiles(files);
   let queued=0,duplicates=0,failed=0;
   try{
     for(let fileIndex=0;fileIndex<files.length;fileIndex++){
-      const file=files[fileIndex],row=state.knowledgeFileUploads[fileIndex];
+      const file=files[fileIndex],row=rowsToProcess[fileIndex];
       try{
         setKnowledgeFileStatus(row,'fingerprinting',5,'Computing exact SHA-256','checking');
         const fileSha256=await sha256File(file);
@@ -713,6 +788,7 @@ async function ingestFileKnowledge(){
       }
     }
     $('knowledgeFile').value='';setFilePickerLabel('knowledgeFile','knowledgeTextFileLabel');
+    for(const row of rowsToProcess)delete row.file;
     await loadKnowledge();
     switchKnowledgeTab('library');
     if(duplicates&&duplicates===files.length)toast('All selected files were already in your library.',4000);
@@ -749,7 +825,7 @@ $('videoInput').onchange=e=>addFiles(e.target.files);
 $('addWebsiteAttachment').onclick=addWebsiteAttachment;
 $('websiteUrlInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();addWebsiteAttachment();}};
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));document.querySelectorAll('.modal').forEach(m=>m.onclick=e=>{if(e.target===m)closeModal(m.id);});
-$('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeGlobalTab').onclick=()=>switchKnowledgeTab('global');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;bindFileDropzone('knowledgeFile','knowledgeFileDropzone','knowledgeTextFileLabel',files=>stageKnowledgeFiles(files));$('saveKnowledgeFiles').onclick=ingestFileKnowledge;bindFileDropzone('knowledgeMediaFile','knowledgeMediaDropzone','knowledgeMediaFileLabel',files=>previewKnowledgeMedia(files[0]||null));$('saveKnowledgeMedia').onclick=ingestKnowledgeMedia;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
+$('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeGlobalTab').onclick=()=>switchKnowledgeTab('global');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;bindFileDropzone('knowledgeFile','knowledgeFileDropzone','knowledgeTextFileLabel',files=>stageTextKnowledgeFiles(files));$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('knowledgeSelectAll').onchange=e=>toggleAllVisibleKnowledge(e.target.checked);$('bulkMoveKnowledge').onclick=openBulkMoveKnowledge;$('clearKnowledgeSelection').onclick=()=>clearKnowledgeSelection();bindFileDropzone('knowledgeMediaFile','knowledgeMediaDropzone','knowledgeMediaFileLabel',files=>previewKnowledgeMedia(files[0]||null));$('saveKnowledgeMedia').onclick=ingestKnowledgeMedia;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
 $('webToggle').onclick=()=>{state.webResearch=!state.webResearch;localStorage.setItem('uncensor.webResearch',String(state.webResearch));syncSettings();if(state.webResearch&&!state.webResearchEnabled)toast('Web Research is temporarily unavailable.',4500);};$('knowledgeToggle').onclick=()=>{state.knowledgeEnabled=!state.knowledgeEnabled;localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));syncSettings();};
 $('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);$('exportFullBackup').onclick=exportFullBackup;$('saveRenameChat').onclick=saveChatRename;$('cancelRenameChat').onclick=()=>closeModal('renameChatModal');$('renameChatInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();saveChatRename();}};$('confirmMoveKnowledge').onclick=confirmMoveKnowledge;$('cancelMoveKnowledge').onclick=()=>closeModal('moveKnowledgeModal');$('revokeThisDevice').onclick=revokeCurrentDevice;$('generatePairingCode').onclick=generatePairingCode;$('redeemPairingCode').onclick=redeemPairingCode;$('pairingCodeInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();redeemPairingCode();}};$('rotateRecoveryKey').onclick=rotateRecoveryKeyFromDevice;$('copyRecoveryKey').onclick=()=>{const v=$('recoveryKeyValue').textContent||'';if(v){navigator.clipboard.writeText(v);toast('Recovery key copied');}};
 $('saveSettings').onclick=async()=>{state.knowledgeEnabled=$('settingKnowledge').checked;state.showSources=$('settingSources').checked;state.mode=$('responseMode').value;state.style=$('stylePrompt').value.trim()||DEFAULT_STYLE;const k=$('accessKeyInput').value.trim();if(k)localStorage.setItem('uncensor.accessKey',k);localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));localStorage.setItem('uncensor.sources',String(state.showSources));localStorage.setItem('uncensor.mode',state.mode);localStorage.setItem('uncensor.style',state.style);try{if(accessKey())await enrollDeviceSession();syncSettings();closeModal('settingsModal');renderMessages();toast(sessionToken()?'Settings saved · device enrolled':'Settings saved');if(hasPrivateAuth())await Promise.all([loadChats(),loadKnowledge(),loadMemories(),status(),health()]);}catch(e){localStorage.removeItem('uncensor.accessKey');syncSettings();toast((e.message||'Could not enroll device')+' Use a one-time link code from your enrolled phone if needed.',5500);}};
