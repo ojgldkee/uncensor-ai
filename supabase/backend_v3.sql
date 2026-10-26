@@ -647,3 +647,70 @@ alter table public.private_ai_knowledge_sources
 create unique index if not exists private_ai_knowledge_file_sha256_uidx
   on public.private_ai_knowledge_sources(file_sha256)
   where source_type='file' and file_sha256 is not null;
+
+
+-- Revocable private device sessions. The master access key is used only to enroll a
+-- browser/device; the browser then stores a revocable 30-day session token instead.
+create table if not exists public.private_ai_device_sessions (
+  id uuid primary key default gen_random_uuid(),
+  token_hash text not null unique,
+  device_name text not null default 'Private device',
+  created_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now(),
+  expires_at timestamptz not null default (now() + interval '30 days'),
+  revoked_at timestamptz
+);
+alter table public.private_ai_device_sessions enable row level security;
+revoke all on table public.private_ai_device_sessions from anon, authenticated;
+grant select, insert, update, delete on table public.private_ai_device_sessions to service_role;
+create index if not exists private_ai_device_sessions_active_idx
+  on public.private_ai_device_sessions(expires_at, revoked_at);
+
+create or replace function public.private_ai_create_device_session(
+  candidate text,
+  requested_device_name text default 'Private device'
+)
+returns table(id uuid, session_token text, expires_at timestamptz)
+language plpgsql
+security definer
+set search_path=''
+as $$
+declare
+  token text := encode(extensions.gen_random_bytes(32),'hex');
+  new_id uuid := extensions.gen_random_uuid();
+  exp timestamptz := now() + interval '30 days';
+begin
+  if not public.private_ai_validate_access_token(candidate) then return; end if;
+  insert into public.private_ai_device_sessions(id,token_hash,device_name,expires_at)
+  values (
+    new_id,
+    encode(extensions.digest(token,'sha256'),'hex'),
+    left(coalesce(nullif(trim(requested_device_name),''),'Private device'),120),
+    exp
+  );
+  return query select new_id,token,exp;
+end;
+$$;
+
+create or replace function public.private_ai_validate_device_session(candidate text)
+returns boolean
+language plpgsql
+security definer
+set search_path=''
+as $$
+declare hashed text; found_id uuid;
+begin
+  if candidate is null or length(candidate)<32 then return false; end if;
+  hashed:=encode(extensions.digest(candidate,'sha256'),'hex');
+  update public.private_ai_device_sessions
+     set last_seen_at=now()
+   where token_hash=hashed and revoked_at is null and expires_at>now()
+  returning id into found_id;
+  return found_id is not null;
+end;
+$$;
+
+revoke all on function public.private_ai_create_device_session(text,text) from public,anon,authenticated;
+revoke all on function public.private_ai_validate_device_session(text) from public,anon,authenticated;
+grant execute on function public.private_ai_create_device_session(text,text) to service_role;
+grant execute on function public.private_ai_validate_device_session(text) to service_role;
