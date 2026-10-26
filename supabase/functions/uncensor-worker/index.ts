@@ -254,7 +254,7 @@ async function processHtmlReprocess(job: QueueJob) {
   const sourceId=String(job.message.source_id||'')
   if(!sourceId){await archive(job.msg_id);return 'invalid HTML reprocess job'}
 
-  const source=await db.from('private_ai_knowledge_sources')
+  const source=await db.from('private_ai_knowledge_sources_read')
     .select('id,title,char_count,metadata').eq('id',sourceId).maybeSingle()
   if(source.error)throw source.error
   if(!source.data){await finish(job.msg_id);return 'source deleted'}
