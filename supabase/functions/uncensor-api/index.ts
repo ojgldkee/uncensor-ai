@@ -321,7 +321,7 @@ async function relevantContext(query: string, includeKnowledge: boolean) {
 
 async function ensureConversation(id: string | null, firstMessage: string) {
   if (id) {
-    const q = await db.from('private_ai_conversations')
+    const q = await db.from('private_ai_conversations_read')
       .select('id,title,rolling_summary,summary_through_message_count,total_message_count')
       .eq('id', id).maybeSingle()
     if (q.error) throw q.error
@@ -334,7 +334,7 @@ async function ensureConversation(id: string | null, firstMessage: string) {
 }
 
 async function recentMessages(conversationId: string, summaryThrough: number) {
-  let query = db.from('private_ai_messages').select('role,content,created_at')
+  let query = db.from('private_ai_messages_read').select('role,content,created_at')
     .eq('conversation_id', conversationId).order('created_at', { ascending: true })
   if (summaryThrough > 0) query = query.range(summaryThrough, summaryThrough + 47)
   else query = query.limit(48)
@@ -827,8 +827,8 @@ async function listConversations() {
 
 async function getConversation(id: string) {
   const [c, m] = await Promise.all([
-    db.from('private_ai_conversations').select('*').eq('id', id).maybeSingle(),
-    db.from('private_ai_messages').select('id,role,content,model,sources,attachments,created_at').eq('conversation_id', id).order('created_at'),
+    db.from('private_ai_conversations_read').select('*').eq('id', id).maybeSingle(),
+    db.from('private_ai_messages_read').select('id,role,content,model,sources,attachments,created_at').eq('conversation_id', id).order('created_at'),
   ])
   if (c.error) throw c.error
   if (m.error) throw m.error
@@ -847,7 +847,7 @@ async function updateConversation(id: string, req: Request) {
 
 async function memoriesRoute(req: Request) {
   if (req.method === 'GET') {
-    const q = await db.from('private_ai_memories').select('id,memory_key,content,category,importance,confidence,active,pinned,updated_at')
+    const q = await db.from('private_ai_memories_read').select('id,memory_key,content,category,importance,confidence,active,pinned,updated_at')
       .order('pinned', { ascending: false }).order('importance', { ascending: false }).order('updated_at', { ascending: false }).limit(1000)
     if (q.error) throw q.error
     return json({ memories: q.data || [] })
@@ -1094,9 +1094,13 @@ Deno.serve(async (req) => {
         if (typeof body.active === 'boolean') patch.active = body.active
         if (typeof body.pinned === 'boolean') patch.pinned = body.pinned
         if (body.importance != null) patch.importance = Math.max(1, Math.min(10, Number(body.importance)))
-        const q = await db.from('private_ai_memories').update(patch).eq('id', id).select().single()
+        const q = await db.from('private_ai_memories').update(patch).eq('id', id).select('id').single()
         if (q.error) throw q.error
-        return json({ ok: true, memory: q.data })
+        const read = await db.from('private_ai_memories_read')
+          .select('id,memory_key,content,category,importance,confidence,active,pinned,updated_at')
+          .eq('id',id).maybeSingle()
+        if (read.error) throw read.error
+        return json({ ok: true, memory: read.data })
       }
       if (req.method === 'DELETE') {
         const q = await db.from('private_ai_memories').delete().eq('id', id)
