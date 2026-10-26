@@ -11,20 +11,57 @@ function accessKey(){return localStorage.getItem('uncensor.accessKey')||'';}
 function sessionToken(){return localStorage.getItem('uncensor.sessionToken')||'';}
 function hasPrivateAuth(){return Boolean(sessionToken()||accessKey());}
 function authHeaders(extra={}){const h=Object.assign({'Content-Type':'application/json'},extra||{});const session=sessionToken(),key=accessKey();if(session)h['x-uncensor-session']=session;else if(key)h['x-uncensor-key']=key;return h;}
-function ensurePrivateAuth(){if(hasPrivateAuth())return true;syncSettings();openModal('settingsModal');toast('Enter your private access key to enroll this device.',3500);return false;}
-async function enrollDeviceSession(){
-  const key=accessKey();if(!key)return false;
-  const name=(navigator.platform||'Private device')+' · '+(navigator.userAgent.includes('iPhone')?'iPhone':navigator.userAgent.includes('iPad')?'iPad':'Browser');
-  const r=await fetch(endpoint('/api/session/enroll'),{method:'POST',headers:{'Content-Type':'application/json','x-uncensor-key':key},body:JSON.stringify({device_name:name})});
-  const d=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(d.error||'Could not enroll this device');
+let authPromptShown=false;
+function deviceName(){return (navigator.platform||'Private device')+' · '+(navigator.userAgent.includes('iPhone')?'iPhone':navigator.userAgent.includes('iPad')?'iPad':navigator.userAgent.includes('Android')?'Android':'Browser');}
+function saveDeviceSession(d){
   localStorage.setItem('uncensor.sessionToken',d.session_token);
   localStorage.setItem('uncensor.sessionId',d.session_id||'');
   localStorage.setItem('uncensor.sessionExpires',d.expires_at||'');
   localStorage.removeItem('uncensor.accessKey');
   if($('accessKeyInput'))$('accessKeyInput').value='';
-  syncSettings();
-  return true;
+  authPromptShown=false;syncSettings();
+}
+function ensurePrivateAuth(){
+  if(hasPrivateAuth())return true;
+  if(!authPromptShown){
+    authPromptShown=true;syncSettings();
+    if($('settingsModal').classList.contains('hidden'))openModal('settingsModal');
+    toast('This device is not linked yet. Use a one-time link code from an enrolled device.',4200);
+  }else toast('This device is not linked. Open Settings to link it.',3000);
+  return false;
+}
+async function enrollDeviceSession(){
+  const key=accessKey();if(!key)return false;
+  const r=await fetch(endpoint('/api/session/enroll'),{method:'POST',headers:{'Content-Type':'application/json','x-uncensor-key':key},body:JSON.stringify({device_name:deviceName()})});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(d.error||'That recovery/master key is not valid.');
+  saveDeviceSession(d);return true;
+}
+async function generatePairingCode(){
+  if(!sessionToken()){toast('This device must already be enrolled to generate a link code.',4000);return;}
+  const b=$('generatePairingCode');b.disabled=true;
+  try{
+    const d=await api('/api/session/pairing-code',{method:'POST',body:'{}'});
+    $('pairingCodeValue').textContent=String(d.pairing_code||'');
+    $('pairingCodeExpiry').textContent='Expires '+new Date(d.expires_at).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})+' · one use only';
+    $('pairingCodeBox').classList.remove('hidden');
+    toast('One-time link code generated. Enter it on the new device.',4500);
+  }catch(e){toast(e.message||'Could not generate link code',4500);}
+  finally{b.disabled=false;}
+}
+async function redeemPairingCode(){
+  const code=$('pairingCodeInput').value.trim();
+  if(!code){toast('Enter the one-time link code first.');return;}
+  const b=$('redeemPairingCode');b.disabled=true;
+  try{
+    const r=await fetch(endpoint('/api/session/redeem-pairing'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pairing_code:code,device_name:deviceName()})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.error||'Could not link this device.');
+    saveDeviceSession(d);$('pairingCodeInput').value='';$('pairingCodeBox').classList.add('hidden');
+    closeModal('settingsModal');toast('Device linked securely.',3500);
+    await Promise.all([loadChats(),loadKnowledge(),loadMemories(),health(),status()]);
+  }catch(e){toast(e.message||'Could not link this device',4500);}
+  finally{b.disabled=false;}
 }
 async function rotateRecoveryKeyFromDevice(){
   if(!sessionToken()){toast('Enroll this device first.',3500);return;}
@@ -44,7 +81,7 @@ async function revokeCurrentDevice(){
   localStorage.removeItem('uncensor.sessionToken');localStorage.removeItem('uncensor.sessionId');localStorage.removeItem('uncensor.sessionExpires');
   syncSettings();toast('This device session was revoked.');openModal('settingsModal');
 }
-async function api(path,opt={},retry=true){const h=Object.assign(authHeaders(),opt.headers||{});const r=await fetch(endpoint(path),Object.assign({},opt,{headers:h}));const tx=await r.text();let d={};try{d=tx?JSON.parse(tx):{};}catch{d={error:tx||'Unexpected response'};}if(r.status===401&&d.requires_access_key&&retry){if(sessionToken()){localStorage.removeItem('uncensor.sessionToken');localStorage.removeItem('uncensor.sessionId');localStorage.removeItem('uncensor.sessionExpires');}if(accessKey()){try{await enrollDeviceSession();return api(path,opt,false);}catch{}}ensurePrivateAuth();}if(!r.ok)throw Object.assign(new Error(d.error||('Request failed '+r.status)),{data:d,status:r.status});return d;}
+async function api(path,opt={}){const h=Object.assign(authHeaders(),opt.headers||{});const r=await fetch(endpoint(path),Object.assign({},opt,{headers:h}));const tx=await r.text();let d={};try{d=tx?JSON.parse(tx):{};}catch{d={error:tx||'Unexpected response'};}if(r.status===401&&d.requires_access_key&&sessionToken()){localStorage.removeItem('uncensor.sessionToken');localStorage.removeItem('uncensor.sessionId');localStorage.removeItem('uncensor.sessionExpires');syncSettings();}if(!r.ok)throw Object.assign(new Error(d.error||('Request failed '+r.status)),{data:d,status:r.status});return d;}
 function autoGrow(){const e=$('input');e.style.height='auto';e.style.height=Math.min(200,e.scrollHeight)+'px';$('charCount').textContent=e.value.length.toLocaleString()+' / 50,000';}
 function activeTitle(){return (state.activeConversation&&state.activeConversation.title)||(state.conversations.find(x=>x.id===state.activeId)||{}).title||'New chat';}
 function header(){$('chatTitleButton').textContent=activeTitle();$('deleteChatTop').disabled=!state.activeId;$('exportChat').disabled=!state.messages.length;}
@@ -537,7 +574,7 @@ function openModal(id){$(id).classList.remove('hidden');if(id==='knowledgeModal'
 function closeModal(id){$(id).classList.add('hidden');if(id==='knowledgeModal'&&state.knowledgePollTimer){clearTimeout(state.knowledgePollTimer);state.knowledgePollTimer=null;}}
 function openSidebar(){$('sidebar').classList.add('open');$('backdrop').classList.add('show');}
 function closeSidebar(){$('sidebar').classList.remove('open');$('backdrop').classList.remove('show');}
-function syncSettings(){$('accessKeyInput').value=accessKey();$('settingKnowledge').checked=state.knowledgeEnabled;$('settingSources').checked=state.showSources;$('stylePrompt').value=state.style;$('responseMode').value=state.mode;$('knowledgeToggle').classList.toggle('active',state.knowledgeEnabled);$('knowledgeToggle').textContent=state.knowledgeEnabled?'Knowledge on':'Knowledge off';$('webToggle').classList.toggle('active',state.webResearch);$('webToggle').textContent=state.webResearch?(state.webResearchEnabled?'Web on':'Web unavailable'):'Web off';$('modeLabel').textContent=(state.mode==='direct'?'Direct':state.mode.charAt(0).toUpperCase()+state.mode.slice(1))+' mode';const exp=localStorage.getItem('uncensor.sessionExpires');$('deviceSessionStatus').textContent=sessionToken()?'Enrolled'+(exp?' · expires '+new Date(exp).toLocaleDateString():''):accessKey()?'Master key ready to enroll':'Not enrolled';$('revokeThisDevice').disabled=!sessionToken();}
+function syncSettings(){$('accessKeyInput').value=accessKey();$('settingKnowledge').checked=state.knowledgeEnabled;$('settingSources').checked=state.showSources;$('stylePrompt').value=state.style;$('responseMode').value=state.mode;$('knowledgeToggle').classList.toggle('active',state.knowledgeEnabled);$('knowledgeToggle').textContent=state.knowledgeEnabled?'Knowledge on':'Knowledge off';$('webToggle').classList.toggle('active',state.webResearch);$('webToggle').textContent=state.webResearch?(state.webResearchEnabled?'Web on':'Web unavailable'):'Web off';$('modeLabel').textContent=(state.mode==='direct'?'Direct':state.mode.charAt(0).toUpperCase()+state.mode.slice(1))+' mode';const exp=localStorage.getItem('uncensor.sessionExpires');$('deviceSessionStatus').textContent=sessionToken()?'Enrolled'+(exp?' · expires '+new Date(exp).toLocaleDateString():''):accessKey()?'Recovery/master key entered — press Save settings':'Not enrolled';$('revokeThisDevice').disabled=!sessionToken();$('generatePairingCode').disabled=!sessionToken();}
 
 $('composer').onsubmit=e=>{e.preventDefault();send($('input').value);};
 $('sendBtn').onclick=e=>{if(state.sending){e.preventDefault();state.abort&&state.abort.abort();}};
@@ -558,8 +595,8 @@ $('websiteUrlInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();addWeb
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));document.querySelectorAll('.modal').forEach(m=>m.onclick=e=>{if(e.target===m)closeModal(m.id);});
 $('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;$('knowledgeFile').onchange=e=>stageKnowledgeFiles(e.target.files);$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('knowledgeMediaFile').onchange=e=>previewKnowledgeMedia(e.target.files?.[0]||null);$('saveKnowledgeMedia').onclick=ingestKnowledgeMedia;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
 $('webToggle').onclick=()=>{state.webResearch=!state.webResearch;localStorage.setItem('uncensor.webResearch',String(state.webResearch));syncSettings();if(state.webResearch&&!state.webResearchEnabled)toast('Web Research is temporarily unavailable.',4500);};$('knowledgeToggle').onclick=()=>{state.knowledgeEnabled=!state.knowledgeEnabled;localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));syncSettings();};
-$('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);$('revokeThisDevice').onclick=revokeCurrentDevice;$('rotateRecoveryKey').onclick=rotateRecoveryKeyFromDevice;$('copyRecoveryKey').onclick=()=>{const v=$('recoveryKeyValue').textContent||'';if(v){navigator.clipboard.writeText(v);toast('Recovery key copied');}};
-$('saveSettings').onclick=async()=>{state.knowledgeEnabled=$('settingKnowledge').checked;state.showSources=$('settingSources').checked;state.mode=$('responseMode').value;state.style=$('stylePrompt').value.trim()||DEFAULT_STYLE;const k=$('accessKeyInput').value.trim();if(k)localStorage.setItem('uncensor.accessKey',k);localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));localStorage.setItem('uncensor.sources',String(state.showSources));localStorage.setItem('uncensor.mode',state.mode);localStorage.setItem('uncensor.style',state.style);try{if(accessKey())await enrollDeviceSession();syncSettings();closeModal('settingsModal');renderMessages();toast('Settings saved · device enrolled');await Promise.all([loadChats(),loadKnowledge(),loadMemories(),status(),health()]);}catch(e){toast(e.message||'Could not enroll device',4500);syncSettings();}};
+$('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);$('revokeThisDevice').onclick=revokeCurrentDevice;$('generatePairingCode').onclick=generatePairingCode;$('redeemPairingCode').onclick=redeemPairingCode;$('pairingCodeInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();redeemPairingCode();}};$('rotateRecoveryKey').onclick=rotateRecoveryKeyFromDevice;$('copyRecoveryKey').onclick=()=>{const v=$('recoveryKeyValue').textContent||'';if(v){navigator.clipboard.writeText(v);toast('Recovery key copied');}};
+$('saveSettings').onclick=async()=>{state.knowledgeEnabled=$('settingKnowledge').checked;state.showSources=$('settingSources').checked;state.mode=$('responseMode').value;state.style=$('stylePrompt').value.trim()||DEFAULT_STYLE;const k=$('accessKeyInput').value.trim();if(k)localStorage.setItem('uncensor.accessKey',k);localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));localStorage.setItem('uncensor.sources',String(state.showSources));localStorage.setItem('uncensor.mode',state.mode);localStorage.setItem('uncensor.style',state.style);try{if(accessKey())await enrollDeviceSession();syncSettings();closeModal('settingsModal');renderMessages();toast(sessionToken()?'Settings saved · device enrolled':'Settings saved');if(hasPrivateAuth())await Promise.all([loadChats(),loadKnowledge(),loadMemories(),status(),health()]);}catch(e){localStorage.removeItem('uncensor.accessKey');syncSettings();toast((e.message||'Could not enroll device')+' Use a one-time link code from your enrolled phone if needed.',5500);}};
 document.querySelectorAll('.prompt-card').forEach(b=>b.onclick=()=>{$('input').value=b.dataset.prompt||'';autoGrow();$('input').focus();});
 
-(async function(){const saved=localStorage.getItem('uncensor.model');if(saved&&[...$('modelSelect').options].some(o=>o.value===saved))$('modelSelect').value=saved;syncSettings();autoGrow();header();await status();if(configuredApiBase()){if(!sessionToken()&&accessKey()){try{await enrollDeviceSession();}catch{}}if(hasPrivateAuth()){await Promise.all([loadChats(),loadKnowledge(),loadMemories(),health()]);}else{syncSettings();openModal('settingsModal');}}})();
+(async function(){const saved=localStorage.getItem('uncensor.model');if(saved&&[...$('modelSelect').options].some(o=>o.value===saved))$('modelSelect').value=saved;syncSettings();autoGrow();header();await status();if(configuredApiBase()){if(!sessionToken()&&accessKey()){try{await enrollDeviceSession();}catch{localStorage.removeItem('uncensor.accessKey');syncSettings();}}if(hasPrivateAuth()){await Promise.all([loadChats(),loadKnowledge(),loadMemories(),health()]);}else{authPromptShown=true;syncSettings();openModal('settingsModal');}}})();
