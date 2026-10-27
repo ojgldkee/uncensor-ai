@@ -21,8 +21,8 @@ expect(app.includes("application/pdf")&&app.includes("extractKnowledgePdf"),'PDF
 expect(app.includes("/api/knowledge/ocr-page")&&api.includes("ocrPdfPage"),'PDF AI OCR fallback is missing');
 expect(app.includes("/api/knowledge/pdf")&&api.includes("knowledgePdfCreate"),'Persistent PDF upload handoff is missing');
 expect(api.includes("knowledgePageNumber")&&api.includes("[PDF page"),'PDF page-aware retrieval is missing');
-expect(html.includes('app.js?v=40'),'Frontend cache version must be v40');
-expect(html.includes('styles.css?v=40'),'Styles cache version must be v40');
+expect(html.includes('app.js?v=41'),'Frontend cache version must be v41');
+expect(html.includes('styles.css?v=41'),'Styles cache version must be v41');
 expect(app.includes("/api/diagnostics")&&html.includes('id="runDiagnostics"'),'Diagnostics UI/endpoint wiring is missing');
 expect(api.includes("if (path === '/api/diagnostics'"),'Diagnostics backend route is missing');
 expect(api.includes('private_ai_match_chunks_scoped'),'Scoped Knowledge retrieval RPC is missing');
@@ -40,7 +40,7 @@ for(const [name,text] of [['app.js',app],['index.html',html],['config.js',config
   expect(!/SUPABASE_SERVICE_ROLE_KEY|OPENROUTER_API_KEY|sk-or-v1-|service_role/i.test(text),name+' appears to expose a server-side secret');
 }
 
-expect(app.includes('citedRefs.has(String(s.ref))'),'Only cited sources should appear as chips');
+expect(!app.includes('sourceHtml=state.showSources'),'Visible source-chip lists must be removed from answers');\nexpect(app.includes('function messageSources(')&&html.includes('id="messageSourcesAction"'),'Sources must be available only through the message action menu');
 expect(app.includes('refreshFinishedRun(run)'),'Streaming responses must refresh the completed cited answer');
 
 console.log('Stability smoke tests passed');
