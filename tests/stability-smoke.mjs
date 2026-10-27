@@ -40,7 +40,8 @@ for(const [name,text] of [['app.js',app],['index.html',html],['config.js',config
   expect(!/SUPABASE_SERVICE_ROLE_KEY|OPENROUTER_API_KEY|sk-or-v1-|service_role/i.test(text),name+' appears to expose a server-side secret');
 }
 
-expect(!app.includes('sourceHtml=state.showSources'),'Visible source-chip lists must be removed from answers');\nexpect(app.includes('function messageSources(')&&html.includes('id="messageSourcesAction"'),'Sources must be available only through the message action menu');
+expect(!app.includes('sourceHtml=state.showSources'),'Visible source-chip lists must be removed from answers');
+expect(app.includes('function messageSources(')&&html.includes('id="messageSourcesAction"'),'Sources must be available only through the message action menu');
 expect(app.includes('refreshFinishedRun(run)'),'Streaming responses must refresh the completed cited answer');
 
 console.log('Stability smoke tests passed');
