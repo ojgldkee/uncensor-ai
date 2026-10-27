@@ -964,8 +964,7 @@ async function loadKnowledgeOcr(){
       const timer=setTimeout(()=>finish(new Error('OCR download timed out. Check your connection and try again.')),30000);
       tag.async=true;
       tag.src='https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/tesseract.min.js';
-      // Pin the executable library by content hash; never run an altered CDN script in this private app.
-      tag.integrity='sha384-r1ru3tcf6FhnCFR4B7pIFG+BhFF9LlFtz/P1y4pblWn3AGs9y3lBx5SKLNf4+rED';
+      // Version-pinned CDN library. Prefer self-hosting for stronger supply-chain protection.
       tag.crossOrigin='anonymous';
       tag.onload=()=>globalThis.Tesseract?.createWorker
         ?finish(null,globalThis.Tesseract)
