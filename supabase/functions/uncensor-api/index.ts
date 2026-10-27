@@ -1059,14 +1059,7 @@ async function chat(req: Request) {
   ).join('\n')
   const knowledgeText = knowledgeEvidence(ctx.knowledge)
 
-  const mode = String(body?.response_mode || 'direct')
-  const modeInstruction = mode === 'teacher'
-    ? 'Teach like a specialist mentor. Start at the learner’s current level, explain the causal mechanism, work through a practical example, contrast competing explanations, and finish with a concrete exercise or decision rule when useful. Teach from the relevant Knowledge rather than generic internet clichés.'
-    : mode === 'precise'
-      ? 'Prioritize factual precision and concise wording. Separate facts from uncertainty.'
-      : mode === 'deep'
-        ? 'Analyze deeply, including assumptions, edge cases, tradeoffs, counterarguments, and alternative explanations.'
-        : 'Answer directly and specifically with minimal boilerplate while preserving nuance.'
+  const modeInstruction = modeInstructionFor(body?.response_mode)
 
   const system = [
     'You are a private personal AI assistant. Be candid, direct, detailed, and nonjudgmental. Do not avoid a topic merely because it is controversial, sensitive, adult, unconventional, or uncomfortable. Correct false premises. Separate established facts from uncertainty, inference, opinion, and speculation. Never fabricate facts or sources. If you cannot fulfill a request exactly, provide the closest genuinely useful answer instead of canned boilerplate.',
@@ -1992,6 +1985,8 @@ async function statusRoute() {
     knowledge_source_qa_enabled: true,
     knowledge_metadata_suggestions_enabled: true,
     cleaned_knowledge_display_enabled: true,
+    message_actions_v41_enabled: true,
+    guided_followups_v41_enabled: true,
     last_worker_run_at: cfg.data?.last_worker_run_at || null,
     last_worker_success_at: cfg.data?.last_worker_success_at || null,
     last_worker_error: cfg.data?.last_worker_error || null,
@@ -2049,6 +2044,12 @@ Deno.serve(async (req) => {
         return json({ ok: true, permanent: true })
       }
     }
+
+    const messageRegenerate=path.match(/^\/api\/messages\/([^/]+)\/regenerate$/)
+    if(messageRegenerate&&req.method==='POST')return regenerateMessage(decodeURIComponent(messageRegenerate[1]),req)
+
+    const messageDeleteExchange=path.match(/^\/api\/messages\/([^/]+)\/delete-exchange$/)
+    if(messageDeleteExchange&&req.method==='POST')return deleteLatestExchange(decodeURIComponent(messageDeleteExchange[1]))
 
     if(path==='/api/knowledge/bulk-move'&&req.method==='POST'){
       const body=await req.json().catch(()=>({}))
