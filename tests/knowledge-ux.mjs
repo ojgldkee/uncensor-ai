@@ -25,7 +25,7 @@ assert.ok(api.includes('Do not invent an author or date'),'Metadata suggestions 
 assert.ok(api.includes('cleanKnowledgeText'),'Existing indexed parser noise must be stripped before display/answering');
 assert.ok(worker.includes('cleanPdfParserBlock'),'New PDF parser wrapper noise must be stripped before indexing');
 
-assert.ok(app.includes('knowledge-source-link')&&app.includes('openKnowledgeInspector({id:btn.dataset.sourceId'),'Knowledge citation chips must open the exact saved source');
-assert.ok(html.includes('app.js?v=40')&&html.includes('styles.css?v=40'),'v40 cache URLs must be active');
+assert.ok(app.includes('renderMessageSources')&&app.includes('openKnowledgeInspector({id:s.source_id'),'Message source menu must open the exact saved source');
+assert.ok(html.includes('app.js?v=41')&&html.includes('styles.css?v=41'),'v41 cache URLs must be active');
 
 console.log('v40 Knowledge UX, source verification, parser cleanup and citation navigation tests passed');
