@@ -262,7 +262,7 @@
               <span><strong>Choose multiple files</strong><small id="knowledgeTextFileLabel">Select several at once, then choose more anytime · drag & drop works too</small></span>
             </label>
             <div class="multi-file-help"><span>✓ Multi-select enabled</span><span>✓ New picks are added, not replaced</span><span>✓ Remove individual files before upload</span></div>
-            <small>PDF pages with screenshot text are scanned with local OCR at no AI-OCR credit charge, then checked for readable content. Keep this tab open during OCR; server Knowledge indexing continues afterward. Up to 100 MB per file. Exact duplicates are blocked.</small>
+            <small>PDFs upload to private Storage first, then server OCR/indexing continues even if you refresh or close this page. Screenshot-heavy PDFs use the scanned-PDF OCR parser automatically. Up to 100 MB per file. Exact duplicates are blocked.</small>
             <button id="saveKnowledgeFiles" class="primary-btn">Scan & upload staged files</button>
           </div>
         </div>
@@ -378,6 +378,6 @@
 
   <div id="toast" class="toast hidden"></div>
   <script src="./config.js?v=27"></script>
-  <script src="./app.js?v=35" defer></script>
+  <script src="./app.js?v=36" defer></script>
 </body>
 </html>

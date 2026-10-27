@@ -608,13 +608,23 @@ function renderKnowledge(){
   rows.forEach(x=>{
     const total=Number(x.chunk_count||0),done=Number(x.embedded_chunk_count||0),status=String(x.status||'queued'),collection=knowledgeCollection(x),meta=x.metadata||{};
     const media=['video','audio'].includes(String(x.source_type||''));
-    const pct=media&&status!=='ready'?Math.max(3,Number(meta.media_progress||0)):(total?Math.round((done/total)*100):(status==='ready'?100:3));
-    const typeLabel=x.source_type==='website'?'Website':x.source_type==='file'?'File':x.source_type==='video'?'Video':x.source_type==='audio'?'Audio':'Notes';
-    const typeIcon=x.source_type==='website'?'↗':x.source_type==='file'?'▤':x.source_type==='video'?'▶':x.source_type==='audio'?'♪':'✎';
+    const pdfSource=String(x.source_type||'')==='pdf';
+    const pct=media&&status!=='ready'?Math.max(3,Number(meta.media_progress||0)):
+      pdfSource&&status!=='ready'?Math.max(3,Number(meta.pdf_progress||0)):
+      (total?Math.round((done/total)*100):(status==='ready'?100:3));
+    const typeLabel=x.source_type==='website'?'Website':x.source_type==='file'?'File':pdfSource?'PDF':x.source_type==='video'?'Video':x.source_type==='audio'?'Audio':'Notes';
+    const typeIcon=x.source_type==='website'?'↗':x.source_type==='file'?'▤':pdfSource?'▧':x.source_type==='video'?'▶':x.source_type==='audio'?'♪':'✎';
     const partCount=(x._items||[]).length;
     const mediaDetail=media?(' · '+esc(String(meta.media_stage||status).replaceAll('_',' '))+(meta.duration_seconds?' · '+Math.floor(Number(meta.duration_seconds)/60)+':'+String(Math.floor(Number(meta.duration_seconds)%60)).padStart(2,'0'):'')+(meta.reference_sections?' · '+Number(meta.reference_sections)+' refs':'')+(meta.transcript_method==='visual_video_analysis'?' · visual analysis only (spoken audio may be incomplete)':'')):'';
     const pdfDetail=meta.pdf_pages?(' · '+Number(meta.pdf_pages)+' pages · '+Number(meta.pdf_ocr_pages||0)+' OCR'+(Number(meta.pdf_ai_ocr_pages||0)?' ('+Number(meta.pdf_ai_ocr_pages||0)+' AI fallback)':'')+' · '+Number(meta.pdf_words||0).toLocaleString()+' words'):'';
-    const baseDetail=media?(formatBytes(Number(meta.file_size||0))+mediaDetail):(Number(x.char_count||0).toLocaleString()+' chars · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks'+pdfDetail);
+    const persistentPdfDetail=pdfSource?(
+      formatBytes(Number(meta.file_size||0))+' · '+esc(String(meta.pdf_stage||status).replaceAll('_',' '))+
+      (meta.pdf_words?' · '+Number(meta.pdf_words).toLocaleString()+' words':'')+
+      (meta.pdf_parser_blocks?' · '+Number(meta.pdf_parser_blocks)+' parsed blocks':'')
+    ):'';
+    const baseDetail=media?(formatBytes(Number(meta.file_size||0))+mediaDetail):
+      pdfSource?persistentPdfDetail:
+      (Number(x.char_count||0).toLocaleString()+' chars · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks'+pdfDetail);
     const globalSource=x.global_enabled===true||!(x.conversation_ids||[]).length;
     const scopeBadge='<span class="knowledge-scope-chip '+(globalSource?'global':'chat')+'">'+(globalSource?'GLOBAL':'CHAT ONLY')+'</span>';
     const selected=state.knowledgeSelected.has(String(x.id));
@@ -674,6 +684,13 @@ function updateKnowledgeUploadRows(){
     if(items.length===row.sourceIds.length && items.every(x=>x.status==='ready')){
       setKnowledgeFileStatus(row,'ready',100,total+' / '+total+' reference chunks indexed','ready');
     }else{
+      const pdfItem=items.find(x=>String(x.source_type||'')==='pdf');
+      if(pdfItem){
+        const m=pdfItem.metadata||{},stage=String(m.pdf_stage||'processing').replaceAll('_',' ');
+        const pct=Math.max(Number(m.pdf_progress||15),total?80+Math.round((done/total)*20):15);
+        setKnowledgeFileStatus(row,'processing',pct,(m.pdf_words?Number(m.pdf_words).toLocaleString()+' words · ':'')+stage,stage);
+        continue;
+      }
       const mediaItem=items.find(x=>['video','audio'].includes(String(x.source_type||'')));
       if(mediaItem){
         const m=mediaItem.metadata||{},stage=String(m.media_stage||'processing').replaceAll('_',' ');
@@ -941,6 +958,39 @@ async function ingestKnowledgeMediaOne(file,conversationId,mode){
   }finally{delete row.file;btn.disabled=false;scheduleKnowledgePoll();}
 }
 
+async function ingestKnowledgePdfPersistent(file,row,conversationId,fileSha256){
+  let uploadedPath='',serverHandoffStarted=false;
+  try{
+    setKnowledgeFileStatus(row,'uploading',18,'Uploading PDF to private Storage','uploading 0%');
+    const signed=await api('/api/uploads/sign',{method:'POST',body:JSON.stringify({
+      name:file.name,mime:'application/pdf',size:file.size,kind:'pdf'
+    })});
+    uploadedPath=signed.path||'';
+    await signedUploadFile(file,signed.signed_url,p=>{
+      setKnowledgeFileStatus(row,'uploading',18+Math.round(p*30),'Uploading PDF to private Storage','uploading '+Math.round(p*100)+'%');
+    });
+    setKnowledgeFileStatus(row,'queued',50,'Creating persistent OCR job','server OCR queued');
+    serverHandoffStarted=true;
+    const created=await api('/api/knowledge/pdf',{method:'POST',body:JSON.stringify({
+      title:file.name,path:signed.path,size:file.size,sha256:fileSha256,
+      collection:$('knowledgeCollection').value.trim().slice(0,80),conversation_id:conversationId
+    })});
+    if(created.duplicate){
+      row.sourceIds=created.source?.id?[created.source.id]:[];
+      setKnowledgeFileStatus(row,'ready',100,'Existing PDF source attached to this chat','attached');
+      return {duplicate:true,sourceId:created.source?.id||null};
+    }
+    row.sourceIds=[created.source_id];
+    setKnowledgeFileStatus(row,'processing',55,'PDF saved · safe to refresh or close · server OCR continues','server OCR');
+    return {duplicate:false,sourceId:created.source_id};
+  }catch(e){
+    if(uploadedPath&&!serverHandoffStarted){
+      await api('/api/uploads/discard',{method:'POST',body:JSON.stringify({path:uploadedPath})}).catch(()=>{});
+    }
+    throw e;
+  }
+}
+
 let pdfjsKnowledgePromise=null;
 let tesseractKnowledgePromise=null;
 const PDF_OCR_MIN_CHARS=220;
@@ -1146,7 +1196,7 @@ async function ingestFileKnowledge(){
   for(const file of files){if(file.size>maxFileBytes){toast(file.name+' is over the 100 MB per-file limit.',4500);return;}}
   const btn=$('saveKnowledgeFiles');btn.disabled=true;
   $('ingestProgress').classList.remove('hidden');
-  let queued=0,duplicates=0,failed=0;
+  let queued=0,queuedSources=0,duplicates=0,failed=0;
   try{
     for(let fileIndex=0;fileIndex<files.length;fileIndex++){
       const file=files[fileIndex],row=rowsToProcess[fileIndex];
@@ -1167,14 +1217,9 @@ async function ingestFileKnowledge(){
         const html=/\.html?$/i.test(file.name); const pdf=/\.pdf$/i.test(file.name)||file.type==='application/pdf';
         let cleanedText=null,pdfStats=null;
         if(pdf){
-          setKnowledgeFileStatus(row,'scanning',20,'Reading PDF · screenshot pages use OCR automatically','scanning PDF');
-          const scanned=await extractKnowledgePdf(file,(page,total,stage,stats)=>{
-            const progress=20+Math.round(page/total*35);
-            const label=stage==='ocr-loading'?'Preparing local OCR':stage==='ocr'?'Scanning screenshot locally':stage==='ocr-ai'?'Using private AI OCR fallback':'Finished page';
-            setKnowledgeFileStatus(row,'scanning',progress,label+' '+page+' / '+total+' · '+stats.ocrPages+' OCR'+(stats.aiOcrPages?' · '+stats.aiOcrPages+' AI fallback':'')+' · '+stats.words.toLocaleString()+' words','scanning PDF');
-          });
-          cleanedText=scanned.text;pdfStats=scanned.stats;
-          setKnowledgeFileStatus(row,'scanning',55,'Read '+pdfStats.pages+' pages · '+pdfStats.ocrPages+' OCR'+(pdfStats.aiOcrPages?' · '+pdfStats.aiOcrPages+' AI fallback':'')+' · '+pdfStats.words.toLocaleString()+' words','text extracted');
+          const persisted=await ingestKnowledgePdfPersistent(file,row,conversationId,fileSha256);
+          if(persisted.duplicate)duplicates++;else queuedSources++;
+          continue;
         }else if(html&&file.size<=25*1024*1024){
           setKnowledgeFileStatus(row,'cleaning',20,'Removing saved-page code, images, CSS, and scripts','cleaning HTML');
           cleanedText=cleanHtmlClient(await file.text());
@@ -1225,7 +1270,7 @@ async function ingestFileKnowledge(){
     switchKnowledgeTab('library');
     if(duplicates&&duplicates===files.length)toast('All selected files were already in your library.',4000);
     else if(failed)toast('Files added with '+failed+' failure'+(failed===1?'':'s')+'.',4000);
-    else toast((files.length-duplicates)+' new file'+((files.length-duplicates)===1?'':'s')+' added · '+duplicates+' duplicate'+(duplicates===1?'':'s')+' blocked',4000);
+    else toast((files.length-duplicates)+' new file'+((files.length-duplicates)===1?'':'s')+' added'+(queuedSources?' · '+queuedSources+' PDF OCR job'+(queuedSources===1?'':'s')+' running on server':'')+' · '+duplicates+' duplicate'+(duplicates===1?'':'s')+' blocked',5000);
   }finally{btn.disabled=false;renderKnowledgeFileQueue();scheduleKnowledgePoll();}
 }
 

@@ -1,8 +1,8 @@
 {
   "name": "uncensor-ai",
   "private": true,
-  "version": "35.0.0",
+  "version": "36.0.0",
   "scripts": {
-    "test": "node --check app.js && node --check supabase/functions/uncensor-api/knowledge-ranking.mjs && node tests/stability-smoke.mjs && node tests/knowledge-retrieval.mjs && node tests/ui-behavior.mjs && node tests/pdf-ocr.mjs"
+    "test": "node --check app.js && node --check supabase/functions/uncensor-api/knowledge-ranking.mjs && node tests/stability-smoke.mjs && node tests/knowledge-retrieval.mjs && node tests/ui-behavior.mjs && node tests/pdf-ocr.mjs && node tests/pdf-persistent.mjs"
   }
 }
