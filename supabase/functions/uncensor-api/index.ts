@@ -1405,6 +1405,75 @@ async function knowledgeCreate(req: Request) {
   return createKnowledgeRecord(title,text,sourceType,metadata,fileSha||null,conversationId)
 }
 
+async function knowledgePdfCreate(req: Request) {
+  const body=await req.json().catch(()=>({}))
+  const title=String(body?.title||'PDF source').trim().slice(0,160)||'PDF source'
+  const path=String(body?.path||'')
+  const size=Number(body?.size||0)
+  const sha=String(body?.sha256||'').toLowerCase().trim()
+  const collection=String(body?.collection||'').trim().slice(0,80)
+  const conversationId=String(body?.conversation_id||'').trim()
+  if(!conversationId)return json({error:'Open or create a chat before adding chat-only Knowledge.'},400)
+  if(!path.startsWith('uploads/'))return json({error:'Invalid private PDF path.'},400)
+  if(!/^[a-f0-9]{64}$/.test(sha))return json({error:'Valid PDF fingerprint required.'},400)
+  if(!Number.isFinite(size)||size<=0||size>104857600)return json({error:'PDF must be between 1 byte and 100 MB.'},413)
+
+  const found=await findDuplicateFile(sha,title,size)
+  if(found){
+    await db.storage.from(ATTACHMENT_BUCKET).remove([path]).catch(()=>{})
+    const attached=await attachKnowledgeSource(conversationId,String(found.source.id))
+    return json({ok:true,duplicate:true,duplicate_reason:found.reason,attached,source:found.source})
+  }
+
+  const created=await db.from('private_ai_knowledge_sources').insert({
+    title,
+    source_type:'pdf',
+    enabled:true,
+    content_hash:'pdf:'+sha,
+    file_sha256:sha,
+    char_count:0,
+    chunk_count:0,
+    embedded_chunk_count:0,
+    status:'processing',
+    metadata:{
+      collection,
+      storage_path:path,
+      file_name:title,
+      file_size:size,
+      mime:'application/pdf',
+      pdf_stage:'queued',
+      pdf_progress:5,
+      pdf_parser:'mistral-ocr',
+      uploaded_at:new Date().toISOString(),
+    },
+  }).select('id').single()
+  if(created.error){
+    await db.storage.from(ATTACHMENT_BUCKET).remove([path]).catch(()=>{})
+    if(String((created.error as any)?.code||'')==='23505'){
+      const exact=await db.from('private_ai_knowledge_sources').select('id').eq('file_sha256',sha).maybeSingle()
+      if(!exact.error&&exact.data){
+        await attachKnowledgeSource(conversationId,exact.data.id)
+        return json({ok:true,duplicate:true,duplicate_reason:'exact_sha256',attached:true,source:await readKnowledgeSource(exact.data.id)})
+      }
+    }
+    throw created.error
+  }
+
+  try{
+    await attachKnowledgeSource(conversationId,created.data.id)
+    const job=await db.rpc('private_ai_enqueue_job',{job:{
+      type:'process_pdf_source',
+      source_id:created.data.id,
+    }})
+    if(job.error)throw job.error
+    return json({ok:true,duplicate:false,source_id:created.data.id,background:true,status:'processing'})
+  }catch(e){
+    await db.from('private_ai_knowledge_sources').delete().eq('id',created.data.id)
+    await db.storage.from(ATTACHMENT_BUCKET).remove([path]).catch(()=>{})
+    throw e
+  }
+}
+
 async function knowledgeMediaCreate(req: Request) {
   const body=await req.json().catch(()=>({}))
   const title=String(body?.title||'Media source').trim().slice(0,160)||'Media source'
@@ -1582,6 +1651,7 @@ async function statusRoute() {
     background_indexing_enabled: true,
     duplicate_detection_enabled: true,
     pdf_ocr_ai_fallback_enabled: Boolean(OPENROUTER_KEY),
+    persistent_pdf_processing_enabled: true,
     last_worker_run_at: cfg.data?.last_worker_run_at || null,
     last_worker_success_at: cfg.data?.last_worker_success_at || null,
     last_worker_error: cfg.data?.last_worker_error || null,
@@ -1621,6 +1691,7 @@ Deno.serve(async (req) => {
     if (path === '/api/knowledge' && req.method === 'POST') return knowledgeCreate(req)
     if (path === '/api/knowledge/url' && req.method === 'POST') return knowledgeUrlCreate(req)
     if (path === '/api/knowledge/media' && req.method === 'POST') return knowledgeMediaCreate(req)
+    if (path === '/api/knowledge/pdf' && req.method === 'POST') return knowledgePdfCreate(req)
 
     const conv = path.match(/^\/api\/conversations\/([^/]+)$/)
     if (conv) {
