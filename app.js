@@ -338,7 +338,7 @@ function clearPendingAttachments(){state.pendingAttachments=[];renderAttachmentT
 
 function safeHttpUrl(v){try{const u=new URL(String(v||''));return ['http:','https:'].includes(u.protocol)?u.toString():'';}catch{return'';}}
 async function saveWebSourcesToKnowledge(sources){if(!state.activeId){toast('Send one message first so this chat exists, then save sources to it.',4500);return;}const urls=[...new Set((sources||[]).map(s=>safeHttpUrl(s.url)).filter(Boolean))].slice(0,10);if(!urls.length)return;let added=0,dupes=0,failed=0;toast('Saving web sources to this chat…',5000);for(const url of urls){try{const d=await api('/api/knowledge/url',{method:'POST',body:JSON.stringify({url,collection:'Web Research',conversation_id:state.activeId})});if(d.duplicate)dupes++;else added++;}catch{failed++;}}state.knowledgeScope='chat';await loadKnowledge();toast(added+' saved to this chat'+(dupes?' · '+dupes+' already existed and were attached':'')+(failed?' · '+failed+' failed':''),4000);}
-function appendMessage(m,scroll=true){$('emptyState').classList.add('hidden');const root=$('messages'),el=document.createElement('article');el.className='message '+m.role;const atts=(m.attachments||[]).slice(0,12),attHtml=atts.length?'<div class="message-attachments">'+atts.map(a=>'<span class="message-attachment">'+attIcon(a.kind)+' '+esc(a.name||a.url||'Attachment')+'</span>').join('')+'</div>':'';if(m.role==='assistant'){const citedRefs=new Set([...String(m.content||'').matchAll(/\[(K\d+|W\d+)\]/g)].map(x=>x[1]));const sources=(m.sources||[]).filter(s=>s.ref&&citedRefs.has(String(s.ref))).slice(0,8),webSources=sources.filter(s=>safeHttpUrl(s.url));const sourceHtml=state.showSources&&sources.length?'<div class="source-chips">'+sources.map(s=>{const u=safeHttpUrl(s.url),label=(s.ref?s.ref+' · ':'')+(s.title|| (u?new URL(u).hostname:'Knowledge'));return u?'<a class="source-chip web-source" href="'+esc(u)+'" target="_blank" rel="noopener noreferrer">'+esc(label)+'</a>':'<span class="source-chip">'+esc(label)+'</span>';}).join('')+'</div>':'';el.innerHTML='<div class="avatar">U</div><div class="message-content"><div class="message-body">'+md(m.content||'')+'</div>'+attHtml+sourceHtml+'<div class="message-actions"><button class="copy">Copy</button>'+(webSources.length?'<button class="save-web">Save web sources to Knowledge</button>':'')+'</div></div>';el.querySelector('.copy').onclick=()=>copyText(m.content||'');const save=el.querySelector('.save-web');if(save)save.onclick=()=>saveWebSourcesToKnowledge(webSources);}else{el.innerHTML='<div class="message-content user-message-content"><div class="message-body">'+md(m.content||'')+'</div>'+attHtml+'<div class="message-actions user-message-actions"><button class="copy">Copy</button></div></div>';el.querySelector('.copy').onclick=()=>copyText(m.content||'');}root.append(el);if(scroll)root.scrollTop=root.scrollHeight;return el;}
+function appendMessage(m,scroll=true){$('emptyState').classList.add('hidden');const root=$('messages'),el=document.createElement('article');el.className='message '+m.role;const atts=(m.attachments||[]).slice(0,12),attHtml=atts.length?'<div class="message-attachments">'+atts.map(a=>'<span class="message-attachment">'+attIcon(a.kind)+' '+esc(a.name||a.url||'Attachment')+'</span>').join('')+'</div>':'';if(m.role==='assistant'){const citedRefs=new Set([...String(m.content||'').matchAll(/\[(K\d+|W\d+)\]/g)].map(x=>x[1]));const sources=(m.sources||[]).filter(s=>s.ref&&citedRefs.has(String(s.ref))).slice(0,8),webSources=sources.filter(s=>safeHttpUrl(s.url));const sourceHtml=state.showSources&&sources.length?'<div class="source-chips">'+sources.map(s=>{const u=safeHttpUrl(s.url),label=(s.ref?s.ref+' · ':'')+(s.title|| (u?new URL(u).hostname:'Knowledge'));return u?'<a class="source-chip web-source" href="'+esc(u)+'" target="_blank" rel="noopener noreferrer">'+esc(label)+'</a>':'<button class="source-chip knowledge-source-link" type="button" data-source-id="'+esc(s.source_id||'')+'" data-source-title="'+esc(s.title||'Knowledge')+'">'+esc(label)+'</button>';}).join('')+'</div>':'';el.innerHTML='<div class="avatar">U</div><div class="message-content"><div class="message-body">'+md(m.content||'')+'</div>'+attHtml+sourceHtml+'<div class="message-actions"><button class="copy">Copy</button>'+(webSources.length?'<button class="save-web">Save web sources to Knowledge</button>':'')+'</div></div>';el.querySelector('.copy').onclick=()=>copyText(m.content||'');el.querySelectorAll('.knowledge-source-link').forEach(btn=>btn.onclick=()=>openKnowledgeInspector({id:btn.dataset.sourceId,title:btn.dataset.sourceTitle}));const save=el.querySelector('.save-web');if(save)save.onclick=()=>saveWebSourcesToKnowledge(webSources);}else{el.innerHTML='<div class="message-content user-message-content"><div class="message-body">'+md(m.content||'')+'</div>'+attHtml+'<div class="message-actions user-message-actions"><button class="copy">Copy</button></div></div>';el.querySelector('.copy').onclick=()=>copyText(m.content||'');}root.append(el);if(scroll)root.scrollTop=root.scrollHeight;return el;}
 function renderMessages(){const root=$('messages');root.innerHTML='';$('emptyState').classList.toggle('hidden',state.messages.length>0);state.messages.forEach(m=>appendMessage(m,false));root.scrollTop=root.scrollHeight;header();}
 
 async function send(text){
@@ -594,7 +594,7 @@ function setKnowledgeView(view){
 function qualityLabel(q){
   if(!q)return 'unrated';
   if(q.score==null)return String(q.label||'processing');
-  return String(q.score)+'/100 · '+String(q.label||'');
+  return String(q.score)+' · '+String(q.label||'').replace(/^./,c=>c.toUpperCase());
 }
 async function loadKnowledgeInspector(query=''){
   const id=state.inspectorSourceId;if(!id)return;
@@ -604,7 +604,7 @@ async function loadKnowledgeInspector(query=''){
   $('knowledgeInspectorTitle').textContent=s.title||'Knowledge Inspector';
   $('knowledgeInspectorSubtitle').textContent=(s.source_type||'source')+' · verify extracted text, metadata and searchability';
   $('knowledgeInspectorQuality').textContent=qualityLabel(q);
-  $('knowledgeInspectorStatus').textContent=String(s.status||'unknown');
+  $('knowledgeInspectorStatus').textContent=String(s.status||'unknown').replace(/^./,c=>c.toUpperCase());
   $('knowledgeInspectorChunks').textContent=Number(s.embedded_chunk_count||0).toLocaleString()+' / '+Number(s.chunk_count||0).toLocaleString();
   $('knowledgeInspectorChars').textContent=Number(s.char_count||0).toLocaleString();
   const issues=Array.isArray(q.issues)?q.issues:[];
@@ -631,8 +631,9 @@ async function loadKnowledgeInspector(query=''){
 }
 async function openKnowledgeInspector(source){
   state.inspectorSourceId=String(source?.id||'');if(!state.inspectorSourceId)return;
-  $('knowledgeInspectorTest').classList.add('hidden');$('knowledgeInspectorTest').textContent='';
-  $('knowledgeInspectorSearch').value='';
+  $('knowledgeInspectorTest').classList.add('hidden');$('knowledgeInspectorTest').innerHTML='';
+  $('knowledgeInspectorAnswer').classList.add('hidden');$('knowledgeInspectorAnswer').innerHTML='';
+  $('knowledgeInspectorAsk').value='';$('knowledgeInspectorSearch').value='';
   openModal('knowledgeInspectorModal');
   $('knowledgeInspectorChunkSummary').textContent='Loading extracted Knowledge…';
   $('knowledgeInspectorChunksList').innerHTML='';
@@ -658,14 +659,55 @@ async function saveInspectorMetadata(){
   }catch(e){toast(e.message||'Could not save metadata',4500);}
   finally{b.disabled=false;}
 }
+function parseSourceTestQuestions(value){
+  return String(value||'').split(/\n+/).map(x=>x.replace(/^\s*\d+[.)]\s*/,'').trim()).filter(x=>x.length>12).slice(0,5);
+}
+async function askInspectorSource(questionOverride=''){
+  if(!state.inspectorSourceId)return;
+  const question=String(questionOverride||$('knowledgeInspectorAsk').value||'').trim();
+  if(!question){toast('Ask a question about this source first.');return;}
+  const b=$('askInspectorSource');b.disabled=true;
+  const out=$('knowledgeInspectorAnswer');out.classList.remove('hidden');out.innerHTML='<span class="answer-loading">Answering only from this source…</span>';
+  try{
+    const d=await api('/api/knowledge/'+encodeURIComponent(state.inspectorSourceId)+'/ask',{method:'POST',body:JSON.stringify({question}),timeoutMs:90000});
+    out.innerHTML='<div class="inspector-answer-label">Source-only answer</div><div class="inspector-answer-body">'+md(d.content||'No answer returned.')+'</div>';
+  }catch(e){out.textContent=e.message||'Could not answer from this source';}
+  finally{b.disabled=false;}
+}
 async function testInspectorSource(){
   if(!state.inspectorSourceId)return;
   const b=$('testInspectorSource');b.disabled=true;
   try{
     const d=await api('/api/knowledge/'+encodeURIComponent(state.inspectorSourceId)+'/test',{method:'POST',body:'{}',timeoutMs:90000});
-    $('knowledgeInspectorTest').textContent=d.questions||'No questions returned.';
-    $('knowledgeInspectorTest').classList.remove('hidden');
+    const questions=parseSourceTestQuestions(d.questions);
+    const root=$('knowledgeInspectorTest');root.innerHTML='';
+    if(!questions.length){root.textContent=d.questions||'No questions returned.';}
+    else questions.forEach((q,i)=>{
+      const row=document.createElement('div');row.className='source-test-question';
+      row.innerHTML='<span><b>'+(i+1)+'.</b> '+esc(q)+'</span><button type="button" class="secondary-btn">Ask this</button>';
+      row.querySelector('button').onclick=()=>{ $('knowledgeInspectorAsk').value=q; askInspectorSource(q); };
+      root.append(row);
+    });
+    root.classList.remove('hidden');
   }catch(e){toast(e.message||'Could not generate source test',4500);}
+  finally{b.disabled=false;}
+}
+async function suggestInspectorMetadata(){
+  if(!state.inspectorSourceId)return;
+  const b=$('suggestInspectorMetadata');b.disabled=true;
+  try{
+    const d=await api('/api/knowledge/'+encodeURIComponent(state.inspectorSourceId)+'/suggest-metadata',{method:'POST',body:'{}',timeoutMs:90000});
+    const m=d.metadata||{};
+    if(m.topic!=null)$('inspectorTopic').value=m.topic;
+    if(m.subtopic!=null)$('inspectorSubtopic').value=m.subtopic;
+    if(m.author!=null)$('inspectorAuthor').value=m.author;
+    if(/^\d{4}-\d{2}-\d{2}$/.test(String(m.source_date||'')))$('inspectorSourceDate').value=m.source_date;
+    if(['unrated','official','research','practitioner','community','personal_data','reference'].includes(String(m.evidence_type||'')))$('inspectorEvidenceType').value=m.evidence_type;
+    if(m.authority!=null)$('inspectorAuthority').value=String(Math.max(1,Math.min(5,Number(m.authority||3))));
+    if(Array.isArray(m.tags))$('inspectorTags').value=m.tags.join(', ');
+    $('inspectorMetadataPanel').open=true;
+    toast('Suggested details filled in · review before saving',4000);
+  }catch(e){toast(e.message||'Could not suggest source details',4500);}
   finally{b.disabled=false;}
 }
 async function retryInspectorSource(){
@@ -723,6 +765,8 @@ function renderKnowledge(){
   if($('knowledgeViewAllCount'))$('knowledgeViewAllCount').textContent=all.length;
   if($('knowledgeViewProcessingCount'))$('knowledgeViewProcessingCount').textContent=processingCount;
   if($('knowledgeViewAttentionCount'))$('knowledgeViewAttentionCount').textContent=attentionCount;
+  if($('knowledgeViewProcessing'))$('knowledgeViewProcessing').classList.toggle('hidden',processingCount===0&&state.knowledgeView!=='processing');
+  if($('knowledgeViewAttention'))$('knowledgeViewAttention').classList.toggle('hidden',attentionCount===0&&state.knowledgeView!=='attention');
   for(const [name,id] of [['all','knowledgeViewAll'],['processing','knowledgeViewProcessing'],['attention','knowledgeViewAttention']]){
     if($(id))$(id).classList.toggle('active',state.knowledgeView===name);
   }
@@ -758,12 +802,16 @@ function renderKnowledge(){
     const typeLabel=x.source_type==='website'?'Website':x.source_type==='file'?'File':pdfSource?'PDF':x.source_type==='video'?'Video':x.source_type==='audio'?'Audio':'Notes';
     const typeIcon=x.source_type==='website'?'↗':x.source_type==='file'?'▤':pdfSource?'▧':x.source_type==='video'?'▶':x.source_type==='audio'?'♪':'✎';
     const partCount=(x._items||[]).length;
-    const mediaDetail=media?(' · '+esc(String(meta.media_stage||status).replaceAll('_',' '))+(meta.duration_seconds?' · '+Math.floor(Number(meta.duration_seconds)/60)+':'+String(Math.floor(Number(meta.duration_seconds)%60)).padStart(2,'0'):'')+(meta.reference_sections?' · '+Number(meta.reference_sections)+' refs':'')+(meta.transcript_method==='visual_video_analysis'?' · visual analysis only (spoken audio may be incomplete)':'')):'';
+    const mediaDetail=media?(
+      status==='ready'
+        ? ((meta.duration_seconds?' · '+Math.floor(Number(meta.duration_seconds)/60)+':'+String(Math.floor(Number(meta.duration_seconds)%60)).padStart(2,'0'):'')+(meta.reference_sections?' · '+Number(meta.reference_sections)+' searchable refs':''))
+        : (' · '+esc(String(meta.media_stage||status).replaceAll('_',' '))+(meta.duration_seconds?' · '+Math.floor(Number(meta.duration_seconds)/60)+':'+String(Math.floor(Number(meta.duration_seconds)%60)).padStart(2,'0'):''))
+    ):'';
     const pdfDetail=meta.pdf_pages?(' · '+Number(meta.pdf_pages)+' pages · '+Number(meta.pdf_ocr_pages||0)+' OCR'+(Number(meta.pdf_ai_ocr_pages||0)?' ('+Number(meta.pdf_ai_ocr_pages||0)+' AI fallback)':'')+' · '+Number(meta.pdf_words||0).toLocaleString()+' words'):'';
     const persistentPdfDetail=pdfSource?(
-      formatBytes(Number(meta.file_size||0))+' · '+esc(String(meta.pdf_stage||status).replaceAll('_',' '))+
-      (meta.pdf_words?' · '+Number(meta.pdf_words).toLocaleString()+' words':'')+
-      (meta.pdf_parser_blocks?' · '+Number(meta.pdf_parser_blocks)+' parsed blocks':'')
+      status==='ready'
+        ? formatBytes(Number(meta.file_size||0))+(meta.pdf_words?' · '+Number(meta.pdf_words).toLocaleString()+' words':'')+' · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks'
+        : formatBytes(Number(meta.file_size||0))+' · '+esc(String(meta.pdf_stage||status).replaceAll('_',' '))+(meta.pdf_words?' · '+Number(meta.pdf_words).toLocaleString()+' words':'')
     ):'';
     const baseDetail=media?(formatBytes(Number(meta.file_size||0))+mediaDetail):
       pdfSource?persistentPdfDetail:
@@ -773,7 +821,7 @@ function renderKnowledge(){
     const quality=x.quality||{},qualityChip='<span class="knowledge-quality-chip '+esc(String(quality.label||'unrated'))+'">'+esc(qualityLabel(quality))+'</span>';
     const selected=state.knowledgeSelected.has(String(x.id));
     const el=document.createElement('div');el.className='knowledge-item knowledge-library-item'+(x.enabled===false?' disabled':'')+(selected?' selected':'');
-    el.innerHTML='<label class="knowledge-row-select" title="Select source"><input class="select-source" type="checkbox" '+(selected?'checked':'')+' /></label><div class="knowledge-item-main"><div class="knowledge-source-icon">'+typeIcon+'</div><div class="knowledge-source-copy"><div class="knowledge-source-title-row"><strong>'+esc(x.title||'Untitled')+'</strong>'+scopeBadge+qualityChip+(collection?'<span class="knowledge-collection-chip">'+esc(collection)+'</span>':'')+'</div><small>'+typeLabel+(partCount>1?' · '+partCount+' segments':'')+' · '+baseDetail+' · '+esc(status)+'</small>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'</div></div><div class="knowledge-actions"><button class="inspect-source" title="Inspect extracted Knowledge">Inspect</button>'+(quality.can_retry?'<button class="retry-source" title="Retry failed processing">Retry</button>':'')+'<button class="move-source" title="Move between Global and specialist chats">Move</button><button class="toggle" title="'+(x.enabled===false?'Enable':'Disable')+'">'+(x.enabled===false?'○':'●')+'</button><button class="rename" title="Rename">✎</button>'+((state.knowledgeScope==='chat'&&globalSource)?'':'<button class="delete danger-hover" title="'+(state.knowledgeScope==='chat'?'Remove from this chat':'Delete permanently')+'">×</button>')+'</div>';
+    el.innerHTML='<label class="knowledge-row-select" title="Select source"><input class="select-source" type="checkbox" '+(selected?'checked':'')+' /></label><div class="knowledge-card-body"><div class="knowledge-card-top"><div class="knowledge-source-icon">'+typeIcon+'</div><div class="knowledge-source-copy"><div class="knowledge-source-title-row"><strong>'+esc(x.title||'Untitled')+'</strong></div><div class="knowledge-badge-row">'+scopeBadge+qualityChip+(collection?'<span class="knowledge-collection-chip">'+esc(collection)+'</span>':'')+'</div></div></div><div class="knowledge-card-meta">'+typeLabel+(partCount>1?' · '+partCount+' segments':'')+' · '+baseDetail+' · '+(status==='ready'?'Ready':esc(status.replace(/^./,c=>c.toUpperCase())))+'</div>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'<div class="knowledge-card-footer"><button class="inspect-source" type="button">Inspect</button>'+(quality.can_retry?'<button class="retry-source" type="button">Retry</button>':'')+'<details class="knowledge-more"><summary aria-label="More source actions">•••</summary><div class="knowledge-more-menu"><button class="move-source" type="button">Move</button><button class="toggle" type="button">'+(x.enabled===false?'Enable':'Disable')+'</button><button class="rename" type="button">Rename</button>'+((state.knowledgeScope==='chat'&&globalSource)?'':'<button class="delete danger-hover" type="button">'+(state.knowledgeScope==='chat'?'Remove from chat':'Delete')+'</button>')+'</div></details></div></div>';
     const items=x._items||[x];
     el.querySelector('.select-source').onchange=e=>{if(e.target.checked)state.knowledgeSelected.add(String(x.id));else state.knowledgeSelected.delete(String(x.id));renderKnowledge();};
     el.querySelector('.inspect-source').onclick=()=>openKnowledgeInspector(x);
@@ -1481,7 +1529,7 @@ $('websiteUrlInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();addWeb
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));document.querySelectorAll('.modal').forEach(m=>m.onclick=e=>{if(e.target===m)closeModal(m.id);});
 $('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeGlobalTab').onclick=()=>switchKnowledgeTab('global');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('knowledgeViewAll').onclick=()=>setKnowledgeView('all');$('knowledgeViewProcessing').onclick=()=>setKnowledgeView('processing');$('knowledgeViewAttention').onclick=()=>setKnowledgeView('attention');$('openRetrievalDebug').onclick=openRetrievalDebugger;$('useGlobalKnowledgeToggle').onchange=e=>setUseGlobalKnowledge(e.target.checked);$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;bindFileDropzone('knowledgeFile','knowledgeFileDropzone','knowledgeTextFileLabel',files=>stageTextKnowledgeFiles(files));$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('knowledgeSelectAll').onchange=e=>toggleAllVisibleKnowledge(e.target.checked);$('bulkMoveKnowledge').onclick=openBulkMoveKnowledge;$('clearKnowledgeSelection').onclick=()=>clearKnowledgeSelection();bindFileDropzone('knowledgeMediaFile','knowledgeMediaDropzone','knowledgeMediaFileLabel',files=>{if(files.length>10)toast('Only the first 10 files were selected. Upload the rest in another batch.',5000);state.knowledgeMediaFiles=files.slice(0,10);previewKnowledgeMedia(state.knowledgeMediaFiles);});$('saveKnowledgeMedia').onclick=ingestKnowledgeMedia;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
 $('webToggle').onclick=()=>{state.webResearch=!state.webResearch;localStorage.setItem('uncensor.webResearch',String(state.webResearch));syncSettings();if(state.webResearch&&!state.webResearchEnabled)toast('Web Research is temporarily unavailable.',4500);};$('knowledgeToggle').onclick=()=>{state.knowledgeEnabled=!state.knowledgeEnabled;localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));syncSettings();};
-$('saveInspectorMetadata').onclick=saveInspectorMetadata;$('testInspectorSource').onclick=testInspectorSource;$('retryInspectorSource').onclick=retryInspectorSource;$('searchInspectorSource').onclick=()=>loadKnowledgeInspector($('knowledgeInspectorSearch').value.trim()).catch(e=>toast(e.message||'Search failed'));$('knowledgeInspectorSearch').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('searchInspectorSource').click();}};$('runRetrievalDebug').onclick=runRetrievalDebugger;$('retrievalDebugQuery').onkeydown=e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();runRetrievalDebugger();}};
+$('saveInspectorMetadata').onclick=saveInspectorMetadata;$('testInspectorSource').onclick=testInspectorSource;$('retryInspectorSource').onclick=retryInspectorSource;$('suggestInspectorMetadata').onclick=suggestInspectorMetadata;$('askInspectorSource').onclick=()=>askInspectorSource();$('knowledgeInspectorAsk').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();askInspectorSource();}};$('searchInspectorSource').onclick=()=>loadKnowledgeInspector($('knowledgeInspectorSearch').value.trim()).catch(e=>toast(e.message||'Search failed'));$('knowledgeInspectorSearch').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('searchInspectorSource').click();}};$('runRetrievalDebug').onclick=runRetrievalDebugger;$('retrievalDebugQuery').onkeydown=e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();runRetrievalDebugger();}};
 $('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);$('runDiagnostics').onclick=()=>runDiagnostics(true);$('exportFullBackup').onclick=exportFullBackup;$('saveRenameChat').onclick=saveChatRename;$('cancelRenameChat').onclick=()=>closeModal('renameChatModal');$('renameChatInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();saveChatRename();}};$('confirmMoveKnowledge').onclick=confirmMoveKnowledge;$('cancelMoveKnowledge').onclick=()=>closeModal('moveKnowledgeModal');$('revokeThisDevice').onclick=revokeCurrentDevice;$('generatePairingCode').onclick=generatePairingCode;$('redeemPairingCode').onclick=redeemPairingCode;$('pairingCodeInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();redeemPairingCode();}};$('rotateRecoveryKey').onclick=rotateRecoveryKeyFromDevice;$('copyRecoveryKey').onclick=()=>{const v=$('recoveryKeyValue').textContent||'';if(v){navigator.clipboard.writeText(v);toast('Recovery key copied');}};
 $('saveSettings').onclick=async()=>{state.knowledgeEnabled=$('settingKnowledge').checked;state.showSources=$('settingSources').checked;state.mode=$('responseMode').value;state.style=$('stylePrompt').value.trim()||DEFAULT_STYLE;const k=$('accessKeyInput').value.trim();if(k)localStorage.setItem('uncensor.accessKey',k);localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));localStorage.setItem('uncensor.sources',String(state.showSources));localStorage.setItem('uncensor.mode',state.mode);localStorage.setItem('uncensor.style',state.style);try{if(accessKey())await enrollDeviceSession();syncSettings();closeModal('settingsModal');renderMessages();toast(sessionToken()?'Settings saved · device enrolled':'Settings saved');if(hasPrivateAuth()){await loadChats();const remembered=localStorage.getItem('uncensor.activeChatId');if(!state.activeId&&remembered&&state.conversations.some(c=>c.id===remembered))await openChat(remembered);await Promise.all([loadKnowledge(),loadMemories(),status(),health()]);}}catch(e){localStorage.removeItem('uncensor.accessKey');syncSettings();toast((e.message||'Could not enroll device')+' Use a one-time link code from your enrolled phone if needed.',5500);}};
 window.addEventListener('error',e=>recordClientError('window',e.error||e.message));

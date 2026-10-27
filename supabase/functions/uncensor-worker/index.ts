@@ -377,6 +377,17 @@ async function analyzeVideo(path:string,title:string){
   return {parsed,usage:raw?.usage||null,model:String(raw?.model||MEDIA_VISION_MODEL)}
 }
 
+function cleanPdfParserBlock(value:any){
+  return String(value||'')
+    .replace(/^\s*<file\b[^>]*>\s*/gmi,'')
+    .replace(/^\s*<\/file>\s*$/gmi,'')
+    .replace(/^\s*<page\b[^>]*>\s*/gmi,'')
+    .replace(/^\s*<\/page>\s*$/gmi,'')
+    .replace(/^\s*filename\s*:\s*[^\n]+\s*$/gmi,'')
+    .replace(/\n{3,}/g,'\n\n')
+    .trim()
+}
+
 async function parsePdfWithOpenRouter(path:string,title:string){
   if(!OPENROUTER_KEY)throw new Error('OPENROUTER_API_KEY is not configured for PDF OCR')
   const url=await mediaSignedUrl(path)
@@ -413,7 +424,10 @@ async function parsePdfWithOpenRouter(path:string,title:string){
   for(const ann of annotations){
     if(ann?.file?.hash)hashes.push(String(ann.file.hash))
     for(const part of ann.file.content||[]){
-      if(part?.type==='text'&&String(part?.text||'').trim())blocks.push(String(part.text).trim())
+      if(part?.type==='text'&&String(part?.text||'').trim()){
+        const cleaned=cleanPdfParserBlock(part.text)
+        if(cleaned)blocks.push(cleaned)
+      }
       else if(part?.type==='image_url')imageParts++
     }
   }

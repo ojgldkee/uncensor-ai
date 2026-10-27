@@ -21,8 +21,8 @@ expect(app.includes("application/pdf")&&app.includes("extractKnowledgePdf"),'PDF
 expect(app.includes("/api/knowledge/ocr-page")&&api.includes("ocrPdfPage"),'PDF AI OCR fallback is missing');
 expect(app.includes("/api/knowledge/pdf")&&api.includes("knowledgePdfCreate"),'Persistent PDF upload handoff is missing');
 expect(api.includes("knowledgePageNumber")&&api.includes("[PDF page"),'PDF page-aware retrieval is missing');
-expect(html.includes('app.js?v=39'),'Frontend cache version must be v39');
-expect(html.includes('styles.css?v=39'),'Styles cache version must be v39');
+expect(html.includes('app.js?v=40'),'Frontend cache version must be v40');
+expect(html.includes('styles.css?v=40'),'Styles cache version must be v40');
 expect(app.includes("/api/diagnostics")&&html.includes('id="runDiagnostics"'),'Diagnostics UI/endpoint wiring is missing');
 expect(api.includes("if (path === '/api/diagnostics'"),'Diagnostics backend route is missing');
 expect(api.includes('private_ai_match_chunks_scoped'),'Scoped Knowledge retrieval RPC is missing');

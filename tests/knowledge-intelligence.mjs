@@ -35,3 +35,11 @@ assert.ok(rank.includes('authorityAdjustment'),'User-set authority must be part 
 assert.ok(rank.includes('stale-source penalty'),'Explicitly current questions must account for dated sources');
 
 console.log('Knowledge Intelligence processing, inspection, retry and retrieval-debug regression tests passed');
+
+assert.ok(app.includes('knowledge-card-footer')&&app.includes('knowledge-more-menu'),'Knowledge cards must use the mobile-safe v40 layout');
+assert.ok(app.includes('askInspectorSource')&&api.includes('askKnowledgeSource'),'Source-only Q&A must be wired');
+assert.ok(app.includes('suggestInspectorMetadata')&&api.includes('suggestKnowledgeMetadata'),'Metadata suggestions must be wired');
+assert.ok(api.includes('cleanKnowledgeText'),'Inspector/evidence must clean parser wrapper noise');
+assert.ok(app.includes('knowledge-source-link'),'Knowledge citation chips must open source inspection');
+assert.ok(html.includes('id="inspectorMetadataPanel"'),'Advanced source metadata must be collapsible');
+assert.ok(html.includes('id="knowledgeInspectorAsk"'),'Inspector must expose source-only Q&A');

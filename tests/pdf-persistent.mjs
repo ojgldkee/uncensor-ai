@@ -26,5 +26,5 @@ assert.ok(worker.includes("private_ai_replace_knowledge_chunks"),'Parsed PDF tex
 assert.ok(worker.includes("operation:'pdf_ocr'"),'PDF OCR usage must be metered');
 assert.ok(worker.includes("original_deleted=true"),'Raw PDF should be deleted only after searchable chunks are built');
 
-assert.ok(html.includes('app.js?v=39'),'v36 frontend cache must be active');
+assert.ok(html.includes('app.js?v=40'),'v40 frontend cache must be active');
 console.log('Persistent PDF upload, background OCR, and indexing regression tests passed');
