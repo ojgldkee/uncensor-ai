@@ -12,6 +12,7 @@ const KNOWLEDGE_BATCH = Math.max(32, Math.min(256, Number(Deno.env.get('KNOWLEDG
 const ATTACHMENT_BUCKET='private-ai-attachments'
 const MEDIA_VISION_MODEL=Deno.env.get('OPENROUTER_MEDIA_MODEL') || 'nvidia/nemotron-3.5-super-vl'
 const MEDIA_TRANSCRIBE_MODEL=Deno.env.get('OPENROUTER_TRANSCRIBE_MODEL') || 'openai/whisper-large-v3-turbo'
+const PDF_PARSE_MODEL=Deno.env.get('OPENROUTER_PDF_MODEL') || SUMMARY_MODEL
 
 type QueueJob = {
   msg_id: number
@@ -113,8 +114,15 @@ function chunkText(text: string) {
   const normalized = String(text || '').replace(/\r\n/g,'\n').replace(/\n{4,}/g,'\n\n\n').trim()
   const out: string[] = []
   const target=1350,overlap=180
+  const markerRe=/\[(?:PDF page\s+\d+(?:\s*\|\s*[^\]]+)?|PDF parser block\s+\d+)\]/gi
+  const markers=[...normalized.matchAll(markerRe)].map((m:any)=>({index:Number(m.index||0),text:String(m[0])}))
+  let markerCursor=0,currentMarker=''
   let start=0
   while(start<normalized.length && out.length<4200){
+    while(markerCursor<markers.length&&markers[markerCursor].index<=start){
+      currentMarker=markers[markerCursor].text
+      markerCursor++
+    }
     let end=Math.min(normalized.length,start+target)
     if(end<normalized.length){
       const boundary=Math.max(
@@ -124,7 +132,8 @@ function chunkText(text: string) {
       )
       if(boundary>start+650)end=boundary+(normalized[boundary]==='.'?1:0)
     }
-    const part=normalized.slice(start,end).trim()
+    let part=normalized.slice(start,end).trim()
+    if(part&&currentMarker&&!/^\[(?:PDF page|PDF parser block)/i.test(part))part=currentMarker+'\n'+part
     if(part)out.push(part)
     if(end>=normalized.length)break
     start=Math.max(start+1,end-overlap)
@@ -366,6 +375,160 @@ async function analyzeVideo(path:string,title:string){
   const content=String(raw?.choices?.[0]?.message?.content||'')
   const parsed=mediaJson(content)
   return {parsed,usage:raw?.usage||null,model:String(raw?.model||MEDIA_VISION_MODEL)}
+}
+
+async function parsePdfWithOpenRouter(path:string,title:string){
+  if(!OPENROUTER_KEY)throw new Error('OPENROUTER_API_KEY is not configured for PDF OCR')
+  const url=await mediaSignedUrl(path)
+  const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
+    method:'POST',
+    headers:{
+      authorization:'Bearer '+OPENROUTER_KEY,
+      'content-type':'application/json',
+      'X-Title':'Uncensor AI PDF Indexer',
+    },
+    body:JSON.stringify({
+      model:PDF_PARSE_MODEL,
+      stream:false,
+      temperature:0,
+      max_tokens:24,
+      usage:{include:true},
+      messages:[{role:'user',content:[
+        {type:'text',text:'Parse this private PDF for a searchable Knowledge library. Reply only with OK after parsing; do not summarize it.'},
+        {type:'file',file:{filename:title,file_data:url}},
+      ]}],
+      plugins:[{id:'file-parser',pdf:{engine:'mistral-ocr'}}],
+      provider:{allow_fallbacks:true,zdr:true,data_collection:'deny'},
+    }),
+    signal:AbortSignal.timeout(120000),
+  })
+  const raw=await res.json().catch(()=>({}))
+  const annotations=[
+    ...(Array.isArray(raw?.choices?.[0]?.message?.annotations)?raw.choices[0].message.annotations:[]),
+    ...(Array.isArray(raw?.error?.metadata?.file_annotations)?raw.error.metadata.file_annotations:[]),
+  ].filter((x:any)=>x?.type==='file'&&Array.isArray(x?.file?.content))
+  const blocks:string[]=[]
+  let imageParts=0
+  const hashes:string[]=[]
+  for(const ann of annotations){
+    if(ann?.file?.hash)hashes.push(String(ann.file.hash))
+    for(const part of ann.file.content||[]){
+      if(part?.type==='text'&&String(part?.text||'').trim())blocks.push(String(part.text).trim())
+      else if(part?.type==='image_url')imageParts++
+    }
+  }
+  if(!res.ok&&blocks.length===0)throw new Error(raw?.error?.message||('PDF parser '+res.status))
+  if(!blocks.length)throw new Error('PDF parser returned no readable text annotations')
+  const text=blocks.map((block,i)=>'[PDF parser block '+String(i+1)+']\n'+block).join('\n\n')
+  return{
+    text,
+    blocks:blocks.length,
+    imageParts,
+    hashes:[...new Set(hashes)],
+    usage:raw?.usage||null,
+    model:String(raw?.model||PDF_PARSE_MODEL),
+  }
+}
+
+async function processPdfSource(job:QueueJob){
+  const sourceId=String(job.message.source_id||'')
+  if(!sourceId){await archive(job.msg_id);return 'invalid PDF job'}
+  const source=await db.from('private_ai_knowledge_sources_read')
+    .select('id,title,source_type,metadata,failure_count').eq('id',sourceId).maybeSingle()
+  if(source.error)throw source.error
+  if(!source.data){await finish(job.msg_id);return 'source deleted'}
+
+  const meta:any=source.data.metadata||{}
+  const path=String(meta.storage_path||''),title=String(source.data.title||meta.file_name||'document.pdf')
+  if(!path.startsWith('uploads/'))throw new Error('PDF source is missing its private storage path')
+
+  const updateMeta=async(stage:string,progress:number,extra:any={})=>{
+    const next={...meta,...extra,pdf_stage:stage,pdf_progress:progress,updated_at:new Date().toISOString()}
+    const q=await db.from('private_ai_knowledge_sources').update({
+      metadata:next,status:'processing',last_error:null,updated_at:new Date().toISOString()
+    }).eq('id',sourceId)
+    if(q.error)throw q.error
+    Object.assign(meta,next)
+  }
+
+  try{
+    await updateMeta('ocr',20,{pdf_parser:'mistral-ocr'})
+    const parsed=await parsePdfWithOpenRouter(path,title)
+    const clean=String(parsed.text||'').trim()
+    const wordCount=(clean.match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/gu)||[]).length
+    if(clean.length<300||wordCount<50)throw new Error('PDF OCR produced too little readable text to index safely')
+
+    await updateMeta('building_knowledge',65,{
+      pdf_parser_blocks:parsed.blocks,
+      pdf_extracted_images:parsed.imageParts,
+      pdf_words:wordCount,
+      pdf_chars:clean.length,
+      pdf_parser_hashes:parsed.hashes,
+    })
+
+    const parts=chunkText(clean)
+    if(!parts.length)throw new Error('PDF OCR produced no searchable chunks')
+    const payload=[]
+    for(let i=0;i<parts.length;i++){
+      payload.push({chunk_index:i,content:parts[i],content_hash:await contentHash(parts[i])})
+    }
+
+    const replaced=await db.rpc('private_ai_replace_knowledge_chunks',{
+      p_source_id:sourceId,
+      p_content_hash:await contentHash(clean),
+      p_char_count:clean.length,
+      p_chunks:payload,
+      p_metadata:{
+        ...meta,
+        pdf_stage:'indexing',
+        pdf_progress:80,
+        pdf_parser_blocks:parsed.blocks,
+        pdf_extracted_images:parsed.imageParts,
+        pdf_words:wordCount,
+        pdf_chars:clean.length,
+        pdf_parser_hashes:parsed.hashes,
+      },
+    })
+    if(replaced.error)throw replaced.error
+
+    const removed=await db.storage.from(ATTACHMENT_BUCKET).remove([path])
+    if(!removed.error){
+      meta.storage_path=''
+      meta.original_deleted=true
+      meta.original_deleted_at=new Date().toISOString()
+      await db.from('private_ai_knowledge_sources').update({
+        metadata:{...meta,pdf_stage:'indexing',pdf_progress:82,pdf_parser_blocks:parsed.blocks,pdf_words:wordCount,pdf_chars:clean.length},
+        updated_at:new Date().toISOString()
+      }).eq('id',sourceId)
+    }
+
+    if(parsed.usage){
+      try{await db.from('private_ai_usage').insert({
+        conversation_id:null,model:parsed.model,operation:'pdf_ocr',
+        prompt_tokens:Number(parsed.usage.prompt_tokens||0),
+        completion_tokens:Number(parsed.usage.completion_tokens||0),
+        total_tokens:Number(parsed.usage.total_tokens||0),
+        cost_usd:Number(parsed.usage.cost||0),
+      })}catch{}
+    }
+
+    await finish(job.msg_id)
+    return 'PDF OCR built '+String(payload.length)+' searchable chunks'
+  }catch(e){
+    const message=e instanceof Error?e.message:String(e)
+    const failures=Number(source.data.failure_count||0)+1
+    const final=failures>=5
+    const q=await db.from('private_ai_knowledge_sources').update({
+      failure_count:failures,
+      last_error:message.slice(0,1800),
+      status:final?'failed':'processing',
+      metadata:{...meta,pdf_stage:final?'failed':'retrying',pdf_progress:final?100:10},
+      updated_at:new Date().toISOString(),
+    }).eq('id',sourceId)
+    if(q.error)console.error('failed to record PDF error',q.error)
+    if(final){await archive(job.msg_id);return 'PDF failed after retries: '+message}
+    throw e
+  }
 }
 
 async function processMediaSource(job:QueueJob){
@@ -664,6 +827,7 @@ async function processJob(job: QueueJob) {
   if (type === 'embed_knowledge_chunk') { await finish(job.msg_id); return 'legacy embedding job removed' }
   if (type === 'reprocess_html_source') return processHtmlReprocess(job)
   if (type === 'process_media_source') return processMediaSource(job)
+  if (type === 'process_pdf_source') return processPdfSource(job)
   if (type === 'summarize_conversation') return processSummary(job)
   if (type === 'extract_memories') return processMemories(job)
   await archive(job.msg_id)
@@ -735,7 +899,7 @@ Deno.serve(async (req) => {
   await db.from('private_ai_runtime_config').update({
     last_worker_success_at: workerError ? undefined : now,
     last_worker_error: workerError ? workerError.slice(0,2000) : null,
-    backend_version: 'v6-private',
+    backend_version: 'v7-private-pdf',
     updated_at: now,
   }).eq('id', true)
 
