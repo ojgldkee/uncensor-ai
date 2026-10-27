@@ -580,6 +580,99 @@ async function saveMessage(conversationId: string, role: string, content: string
   return q.data
 }
 
+async function latestAssistantTarget(messageId:string){
+  const target=await db.from('private_ai_messages_read')
+    .select('id,conversation_id,role,content,model,sources,attachments,created_at')
+    .eq('id',messageId).maybeSingle()
+  if(target.error)throw target.error
+  if(!target.data)return {error:json({error:'Message not found'},404)}
+  if(target.data.role!=='assistant')return {error:json({error:'Only assistant responses can use this action.'},400)}
+  const latest=await db.from('private_ai_messages_read').select('id,role,created_at')
+    .eq('conversation_id',target.data.conversation_id).order('created_at',{ascending:false}).limit(1)
+  if(latest.error)throw latest.error
+  if(!latest.data?.length||String(latest.data[0].id)!==messageId)return {error:json({error:'For reliability, Regenerate/Delete Exchange is available on the latest response only.'},409)}
+  const conv=await db.from('private_ai_conversations_read')
+    .select('id,title,rolling_summary,summary_through_message_count,total_message_count')
+    .eq('id',target.data.conversation_id).single()
+  if(conv.error)throw conv.error
+  const previous=await db.from('private_ai_messages_read')
+    .select('id,role,content,attachments,created_at').eq('conversation_id',target.data.conversation_id)
+    .lt('created_at',target.data.created_at).order('created_at',{ascending:false}).limit(1)
+  if(previous.error)throw previous.error
+  const user=previous.data?.[0]
+  if(!user||user.role!=='user')return {error:json({error:'Could not find the user message for this response.'},409)}
+  return {target:target.data,user,conversation:conv.data}
+}
+function modeInstructionFor(modeValue:any){
+  const mode=String(modeValue||'direct')
+  return mode==='teacher'
+    ? 'Teach like a specialist mentor. Start at the learner’s current level, explain the causal mechanism, work through a practical example, contrast competing explanations, and finish with a concrete exercise or decision rule when useful. Teach from the relevant Knowledge rather than generic internet clichés.'
+    : mode==='precise'
+      ? 'Prioritize factual precision and concise wording. Separate facts from uncertainty.'
+      : mode==='deep'
+        ? 'Analyze deeply, including assumptions, edge cases, tradeoffs, counterarguments, and alternative explanations.'
+        : 'Answer directly and specifically with minimal boilerplate while preserving nuance.'
+}
+async function regenerateMessage(messageId:string,req:Request){
+  if(!OPENROUTER_KEY)return json({error:'OpenRouter key is not configured in Supabase yet.'},503)
+  const info:any=await latestAssistantTarget(messageId);if(info.error)return info.error
+  const {target,user,conversation}=info
+  if(Number(conversation.summary_through_message_count||0)>=Number(conversation.total_message_count||0)){
+    return json({error:'This response is already inside the rolling summary. Start a new follow-up instead of rewriting summarized history.'},409)
+  }
+  const body=await req.json().catch(()=>({}))
+  const spend=await rollingSpend()
+  if(DAILY_CAP>0&&spend>=DAILY_CAP)return json({error:'Rolling 24-hour spend cap reached.',spent:spend,cap:DAILY_CAP},429)
+  const query=String(user.content||'').trim()||'Regenerate the previous response'
+  const ctx=await relevantContext(query,body?.use_knowledge!==false,String(conversation.id))
+  const recent=await db.from('private_ai_messages_read').select('id,role,content,created_at')
+    .eq('conversation_id',conversation.id).neq('id',messageId).order('created_at',{ascending:true}).limit(48)
+  if(recent.error)throw recent.error
+  const memoryText=(ctx.memories||[]).slice(0,12).map((m:any)=>'- ['+String(m.category||'memory')+'] '+String(m.content||'')).join('\n')
+  const knowledgeText=knowledgeEvidence(ctx.knowledge)
+  const system=[
+    'You are a private personal AI assistant. Be candid, direct, detailed, and nonjudgmental. Correct false premises. Separate established facts from uncertainty, inference, opinion, and speculation. Never fabricate facts or sources.',
+    EVIDENCE_RULES,
+    'CURRENT DATE: '+new Date().toISOString().slice(0,10)+'.',
+    modeInstructionFor(body?.response_mode),
+    body?.style_prompt?'USER CUSTOM INSTRUCTIONS:\n'+String(body.style_prompt).slice(0,5000):'',
+    conversation.rolling_summary?'ROLLING SUMMARY OF EARLIER CHAT CONTEXT:\n'+String(conversation.rolling_summary):'',
+    memoryText?'RELEVANT LONG-TERM MEMORY FROM PRIOR CHATS:\n'+memoryText:'',
+    knowledgeText?'RELEVANCE-SCREENED USER KNOWLEDGE:\n'+knowledgeText:'',
+    ctx.knowledge_retrieval_failed?'Knowledge retrieval temporarily failed. Do not claim the Knowledge library was checked successfully.':'',
+    'You are regenerating the latest assistant response. Give a fresh, improved answer to the existing final user message; do not mention regeneration.'
+  ].filter(Boolean).join('\n\n')
+  let messages:any[]=[{role:'system',content:system},...(recent.data||[]).map((m:any)=>({role:m.role,content:String(m.content||'').slice(0,50000)}))]
+  const attachments=Array.isArray(user.attachments)?user.attachments:[]
+  const attached=attachments.length?await attachmentParts(attachments):{forceMultimodal:false,parts:[]}
+  if(attachments.length&&messages[messages.length-1]?.role==='user')messages[messages.length-1].content=[{type:'text',text:query},...attached.parts]
+  const preferred=attached.forceMultimodal?MULTIMODAL_MODEL:cleanModel(body?.model||target.model)
+  const result=await openRouterOnce(preferred,messages)
+  const sourceMeta=knowledgeSourceMeta(ctx.knowledge)
+  const updated=await db.from('private_ai_messages').update({content:result.content,model:result.model,sources:sourceMeta})
+    .eq('id',messageId).select('id').single()
+  if(updated.error)throw updated.error
+  if(result.usage)await db.from('private_ai_usage').insert({
+    conversation_id:conversation.id,model:result.model,operation:'regenerate',
+    prompt_tokens:Number(result.usage.prompt_tokens||0),completion_tokens:Number(result.usage.completion_tokens||0),
+    total_tokens:Number(result.usage.total_tokens||0),cost_usd:Number(result.usage.cost||0)
+  })
+  return json({ok:true,message_id:messageId,conversation_id:conversation.id,content:result.content,model:result.model,sources:sourceMeta})
+}
+async function deleteLatestExchange(messageId:string){
+  const info:any=await latestAssistantTarget(messageId);if(info.error)return info.error
+  const {target,user,conversation}=info
+  const total=Number(conversation.total_message_count||0),through=Number(conversation.summary_through_message_count||0)
+  if(through>Math.max(0,total-2))return json({error:'This exchange is already inside the rolling summary and cannot be safely removed.'},409)
+  const paths=(Array.isArray(user.attachments)?user.attachments:[]).map((a:any)=>String(a?.path||'')).filter((p:string)=>p.startsWith('uploads/'))
+  if(paths.length)await db.storage.from(ATTACHMENT_BUCKET).remove([...new Set(paths)])
+  await db.from('private_ai_memories').delete().in('source_message_id',[user.id,target.id])
+  const del=await db.from('private_ai_messages').delete().in('id',[user.id,target.id]);if(del.error)throw del.error
+  const count=await db.from('private_ai_messages').select('id',{count:'exact',head:true}).eq('conversation_id',conversation.id);if(count.error)throw count.error
+  const upd=await db.from('private_ai_conversations').update({total_message_count:Number(count.count||0),updated_at:new Date().toISOString()}).eq('id',conversation.id);if(upd.error)throw upd.error
+  return json({ok:true,conversation_id:conversation.id,deleted:[user.id,target.id]})
+}
+
 async function openRouterStream(model: string, messages: any[]) {
   const candidates = [model, ...FALLBACK_MODELS].filter((x, i, a) => x && a.indexOf(x) === i)
   let last = 'No model provider succeeded'
