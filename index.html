@@ -16,7 +16,7 @@
     #app{min-height:100dvh}
   </style>
   <link rel="manifest" href="./manifest.webmanifest?v=27" />
-  <link rel="stylesheet" href="./styles.css?v=31" />
+  <link rel="stylesheet" href="./styles.css?v=39" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -175,6 +175,12 @@
       <div id="knowledgeFileQueue" class="knowledge-file-queue hidden" aria-live="polite"></div>
 
       <section id="knowledgeLibraryPanel" class="knowledge-library-panel">
+        <div class="knowledge-view-tabs" role="tablist" aria-label="Knowledge view">
+          <button id="knowledgeViewAll" class="knowledge-view-tab active" type="button">Library <span id="knowledgeViewAllCount">0</span></button>
+          <button id="knowledgeViewProcessing" class="knowledge-view-tab" type="button">Processing <span id="knowledgeViewProcessingCount">0</span></button>
+          <button id="knowledgeViewAttention" class="knowledge-view-tab" type="button">Needs attention <span id="knowledgeViewAttentionCount">0</span></button>
+          <button id="openRetrievalDebug" class="knowledge-view-tab debug" type="button">Why these sources?</button>
+        </div>
         <div class="knowledge-library-controls">
           <div class="knowledge-search knowledge-search-large"><input id="knowledgeSearch" type="search" placeholder="Search this chat's Knowledge…" /></div>
           <select id="knowledgeTypeFilter" class="knowledge-filter">
@@ -182,6 +188,7 @@
             <option value="website">Websites</option>
             <option value="paste">Notes / pasted text</option>
             <option value="file">Files</option>
+            <option value="pdf">PDFs</option>
             <option value="video">Videos</option>
             <option value="audio">Audio</option>
           </select>
@@ -311,6 +318,66 @@
     </div>
   </div>
 
+  <div id="knowledgeInspectorModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="knowledgeInspectorTitle">
+    <div class="modal-card knowledge-inspector-card">
+      <div class="modal-head">
+        <div><h2 id="knowledgeInspectorTitle">Knowledge Inspector</h2><p id="knowledgeInspectorSubtitle">Verify exactly what was extracted and indexed.</p></div>
+        <button class="icon-btn" data-close="knowledgeInspectorModal">×</button>
+      </div>
+      <div class="inspector-health">
+        <div><span>Quality</span><strong id="knowledgeInspectorQuality">—</strong></div>
+        <div><span>Status</span><strong id="knowledgeInspectorStatus">—</strong></div>
+        <div><span>Chunks</span><strong id="knowledgeInspectorChunks">—</strong></div>
+        <div><span>Characters</span><strong id="knowledgeInspectorChars">—</strong></div>
+      </div>
+      <div id="knowledgeInspectorIssues" class="inspector-issues hidden"></div>
+      <div class="inspector-metadata-grid">
+        <label><span>Topic</span><input id="inspectorTopic" type="text" maxlength="80" placeholder="Meta Ads" /></label>
+        <label><span>Subtopic</span><input id="inspectorSubtopic" type="text" maxlength="100" placeholder="Creative testing / scaling" /></label>
+        <label><span>Author / source</span><input id="inspectorAuthor" type="text" maxlength="100" placeholder="Evolve / Meta / Nick Theriot" /></label>
+        <label><span>Source date</span><input id="inspectorSourceDate" type="date" /></label>
+        <label><span>Evidence type</span><select id="inspectorEvidenceType">
+          <option value="unrated">Unrated</option>
+          <option value="official">Official / primary</option>
+          <option value="research">Research / study</option>
+          <option value="practitioner">Practitioner / training</option>
+          <option value="community">Community discussion</option>
+          <option value="personal_data">My actual data</option>
+          <option value="reference">Reference material</option>
+        </select></label>
+        <label><span>Authority</span><select id="inspectorAuthority">
+          <option value="1">1 · low</option><option value="2">2</option><option value="3" selected>3 · neutral</option><option value="4">4</option><option value="5">5 · highest</option>
+        </select></label>
+        <label class="inspector-tags"><span>Tags</span><input id="inspectorTags" type="text" maxlength="500" placeholder="CBO, cost caps, creative testing" /></label>
+      </div>
+      <div class="inspector-actions">
+        <button id="saveInspectorMetadata" class="secondary-btn" type="button">Save source metadata</button>
+        <button id="testInspectorSource" class="secondary-btn" type="button">Generate 5 source-test questions</button>
+        <button id="retryInspectorSource" class="secondary-btn hidden" type="button">Retry processing</button>
+      </div>
+      <div id="knowledgeInspectorTest" class="inspector-test hidden"></div>
+      <div class="inspector-search-row">
+        <input id="knowledgeInspectorSearch" type="search" placeholder="Search inside this source…" />
+        <button id="searchInspectorSource" class="secondary-btn" type="button">Search</button>
+      </div>
+      <div id="knowledgeInspectorChunkSummary" class="inspector-chunk-summary">Loading extracted Knowledge…</div>
+      <div id="knowledgeInspectorChunksList" class="inspector-chunks"></div>
+    </div>
+  </div>
+
+  <div id="retrievalDebugModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="retrievalDebugTitle">
+    <div class="modal-card retrieval-debug-card">
+      <div class="modal-head">
+        <div><h2 id="retrievalDebugTitle">Retrieval Inspector</h2><p>See what Knowledge would be selected for a question—and why other passages were rejected.</p></div>
+        <button class="icon-btn" data-close="retrievalDebugModal">×</button>
+      </div>
+      <textarea id="retrievalDebugQuery" rows="3" maxlength="5000" placeholder="e.g. Why is my Meta CPM high and how should I diagnose it?"></textarea>
+      <div class="inspector-actions"><button id="runRetrievalDebug" class="primary-btn" type="button">Analyze retrieval</button></div>
+      <div id="retrievalDebugSummary" class="retrieval-debug-summary">Enter a question to inspect the retrieval pipeline.</div>
+      <div id="retrievalDebugResults" class="retrieval-debug-results"></div>
+    </div>
+  </div>
+
   <div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
     <div class="modal-card settings-card">
       <div class="modal-head">
@@ -378,6 +445,6 @@
 
   <div id="toast" class="toast hidden"></div>
   <script src="./config.js?v=27"></script>
-  <script src="./app.js?v=36" defer></script>
+  <script src="./app.js?v=39" defer></script>
 </body>
 </html>
