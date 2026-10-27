@@ -17,7 +17,7 @@ Give concrete specifics, examples, calculations, tradeoffs, edge cases, likely f
 Be concise when the answer is simple and thorough when the problem is complicated. Avoid canned disclaimers, repetitive caveats, fake neutrality, and refusal boilerplate. If some narrow part cannot be fulfilled, say so briefly and immediately continue with the closest genuinely useful answer.`;
 const savedStyle=localStorage.getItem('uncensor.style');
 if(!savedStyle||savedStyle===LEGACY_DEFAULT_STYLE)localStorage.setItem('uncensor.style',DEFAULT_STYLE);
-const state={conversations:[],activeId:null,activeConversation:null,messages:[],knowledge:[],knowledgeScope:'global',knowledgeLoadSeq:0,knowledgeChatCount:0,knowledgeGlobalCount:0,knowledgeSelected:new Set(),knowledgeVisibleIds:[],moveKnowledgeSources:[],renameChatTarget:null,memories:[],pendingAttachments:[],knowledgeFileUploads:[],knowledgePollTimer:null,webResearch:localStorage.getItem('uncensor.webResearch')==='true',webResearchEnabled:false,pendingRuns:new Map(),draftId:crypto.randomUUID(),chatOpenSeq:0,knowledgeEnabled:localStorage.getItem('uncensor.knowledge')!=='false',showSources:localStorage.getItem('uncensor.sources')!=='false',mode:localStorage.getItem('uncensor.mode')||'direct',style:localStorage.getItem('uncensor.style')||DEFAULT_STYLE};
+const state={conversations:[],activeId:null,activeConversation:null,messages:[],knowledge:[],knowledgeScope:'global',knowledgeView:'all',knowledgeLoadSeq:0,knowledgeChatCount:0,knowledgeGlobalCount:0,knowledgeSelected:new Set(),knowledgeVisibleIds:[],moveKnowledgeSources:[],inspectorSourceId:null,renameChatTarget:null,memories:[],pendingAttachments:[],knowledgeFileUploads:[],knowledgePollTimer:null,webResearch:localStorage.getItem('uncensor.webResearch')==='true',webResearchEnabled:false,pendingRuns:new Map(),draftId:crypto.randomUUID(),chatOpenSeq:0,knowledgeEnabled:localStorage.getItem('uncensor.knowledge')!=='false',showSources:localStorage.getItem('uncensor.sources')!=='false',mode:localStorage.getItem('uncensor.mode')||'direct',style:localStorage.getItem('uncensor.style')||DEFAULT_STYLE};
 
 function esc(v){return String(v||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
 function md(v){let s=esc(v);s=s.replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h1>$1</h1>');s=s.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>');return s.split(/\n{2,}/).map(p=>/^<h\d/.test(p)?p:'<p>'+p.replace(/\n/g,'<br>')+'</p>').join('');}
@@ -579,12 +579,153 @@ async function confirmMoveKnowledge(){
   finally{btn.disabled=false;$('confirmMoveKnowledge').textContent='Move source';}
 }
 
+function sourceNeedsAttention(x){
+  const q=x?.quality||{}
+  return String(x?.status||'')==='failed'||['failed','poor','review'].includes(String(q.label||''))
+}
+function setKnowledgeView(view){
+  state.knowledgeView=['all','processing','attention'].includes(view)?view:'all';
+  for(const [name,id] of [['all','knowledgeViewAll'],['processing','knowledgeViewProcessing'],['attention','knowledgeViewAttention']]){
+    const el=$(id);if(el)el.classList.toggle('active',state.knowledgeView===name);
+  }
+  if($('knowledgeViewAttention'))$('knowledgeViewAttention').classList.toggle('attention-active',state.knowledgeView==='attention');
+  renderKnowledge();
+}
+function qualityLabel(q){
+  if(!q)return 'unrated';
+  if(q.score==null)return String(q.label||'processing');
+  return String(q.score)+'/100 · '+String(q.label||'');
+}
+async function loadKnowledgeInspector(query=''){
+  const id=state.inspectorSourceId;if(!id)return;
+  const encoded=encodeURIComponent(id),qs=query?'?q='+encodeURIComponent(query):'';
+  const d=await api('/api/knowledge/'+encoded+'/inspect'+qs);
+  const s=d.source||{},q=s.quality||{},m=s.metadata||{};
+  $('knowledgeInspectorTitle').textContent=s.title||'Knowledge Inspector';
+  $('knowledgeInspectorSubtitle').textContent=(s.source_type||'source')+' · verify extracted text, metadata and searchability';
+  $('knowledgeInspectorQuality').textContent=qualityLabel(q);
+  $('knowledgeInspectorStatus').textContent=String(s.status||'unknown');
+  $('knowledgeInspectorChunks').textContent=Number(s.embedded_chunk_count||0).toLocaleString()+' / '+Number(s.chunk_count||0).toLocaleString();
+  $('knowledgeInspectorChars').textContent=Number(s.char_count||0).toLocaleString();
+  const issues=Array.isArray(q.issues)?q.issues:[];
+  $('knowledgeInspectorIssues').classList.toggle('hidden',!issues.length);
+  $('knowledgeInspectorIssues').innerHTML=issues.map(x=>'• '+esc(x)).join('<br>');
+  $('inspectorTopic').value=m.topic||'';
+  $('inspectorSubtopic').value=m.subtopic||'';
+  $('inspectorAuthor').value=m.author||'';
+  $('inspectorSourceDate').value=/^\d{4}-\d{2}-\d{2}$/.test(String(m.source_date||''))?m.source_date:'';
+  $('inspectorEvidenceType').value=['unrated','official','research','practitioner','community','personal_data','reference'].includes(String(m.evidence_type||''))?m.evidence_type:'unrated';
+  $('inspectorAuthority').value=String(Math.max(1,Math.min(5,Number(m.authority||3))));
+  $('inspectorTags').value=Array.isArray(m.tags)?m.tags.join(', '):'';
+  $('retryInspectorSource').classList.toggle('hidden',!q.can_retry);
+  $('knowledgeInspectorChunkSummary').textContent=(query?d.match_count+' matching':'Showing '+Math.min(d.chunks?.length||0,d.match_count||0)+' of '+Number(d.match_count||0))+' extracted chunks';
+  const root=$('knowledgeInspectorChunksList');root.innerHTML='';
+  for(const c of d.chunks||[]){
+    const el=document.createElement('div');el.className='inspector-chunk';
+    const page=String(c.content||'').match(/\[PDF page\s+(\d+)/i)?.[1];
+    const time=String(c.content||'').match(/^\[(\d\d:\d\d(?:-\d\d:\d\d)?)\]/)?.[1];
+    el.innerHTML='<div class="inspector-chunk-head"><span>Chunk '+(Number(c.chunk_index)+1)+(page?' · PDF page '+esc(page):time?' · '+esc(time):'')+'</span><span>'+esc(String(c.content_hash||'').slice(0,10))+'</span></div><pre>'+esc(c.content||'')+'</pre>';
+    root.append(el);
+  }
+  if(!(d.chunks||[]).length)root.innerHTML='<div class="knowledge-empty"><strong>No matching extracted text</strong><p>Try another search, or review the source quality and processing status above.</p></div>';
+}
+async function openKnowledgeInspector(source){
+  state.inspectorSourceId=String(source?.id||'');if(!state.inspectorSourceId)return;
+  $('knowledgeInspectorTest').classList.add('hidden');$('knowledgeInspectorTest').textContent='';
+  $('knowledgeInspectorSearch').value='';
+  openModal('knowledgeInspectorModal');
+  $('knowledgeInspectorChunkSummary').textContent='Loading extracted Knowledge…';
+  $('knowledgeInspectorChunksList').innerHTML='';
+  try{await loadKnowledgeInspector('');}catch(e){toast(e.message||'Could not inspect this source',4500);}
+}
+async function saveInspectorMetadata(){
+  if(!state.inspectorSourceId)return;
+  const tags=$('inspectorTags').value.split(',').map(x=>x.trim()).filter(Boolean);
+  const patch={
+    topic:$('inspectorTopic').value.trim(),
+    subtopic:$('inspectorSubtopic').value.trim(),
+    author:$('inspectorAuthor').value.trim(),
+    source_date:$('inspectorSourceDate').value,
+    evidence_type:$('inspectorEvidenceType').value,
+    authority:Number($('inspectorAuthority').value||3),
+    tags
+  };
+  const b=$('saveInspectorMetadata');b.disabled=true;
+  try{
+    await api('/api/knowledge/'+encodeURIComponent(state.inspectorSourceId),{method:'PATCH',body:JSON.stringify({metadata_patch:patch})});
+    await Promise.all([loadKnowledge(),loadKnowledgeInspector($('knowledgeInspectorSearch').value.trim())]);
+    toast('Source metadata saved');
+  }catch(e){toast(e.message||'Could not save metadata',4500);}
+  finally{b.disabled=false;}
+}
+async function testInspectorSource(){
+  if(!state.inspectorSourceId)return;
+  const b=$('testInspectorSource');b.disabled=true;
+  try{
+    const d=await api('/api/knowledge/'+encodeURIComponent(state.inspectorSourceId)+'/test',{method:'POST',body:'{}',timeoutMs:90000});
+    $('knowledgeInspectorTest').textContent=d.questions||'No questions returned.';
+    $('knowledgeInspectorTest').classList.remove('hidden');
+  }catch(e){toast(e.message||'Could not generate source test',4500);}
+  finally{b.disabled=false;}
+}
+async function retryInspectorSource(){
+  if(!state.inspectorSourceId)return;
+  const b=$('retryInspectorSource');b.disabled=true;
+  try{
+    await api('/api/knowledge/'+encodeURIComponent(state.inspectorSourceId)+'/retry',{method:'POST',body:'{}'});
+    await loadKnowledge();await loadKnowledgeInspector('');
+    toast('Processing retry queued');
+    scheduleKnowledgePoll();
+  }catch(e){toast(e.message||'Could not retry source',4500);}
+  finally{b.disabled=false;}
+}
+async function retryKnowledgeFromRow(source){
+  const id=String(source?.id||'');if(!id)return;
+  try{
+    await api('/api/knowledge/'+encodeURIComponent(id)+'/retry',{method:'POST',body:'{}'});
+    toast('Retry queued');await loadKnowledge();scheduleKnowledgePoll();
+  }catch(e){toast(e.message||'Could not retry source',4500);}
+}
+function openRetrievalDebugger(){
+  if(!state.activeId){toast('Open a specialist chat first.');return;}
+  $('retrievalDebugQuery').value=$('input').value.trim();
+  $('retrievalDebugSummary').textContent='Enter a question to inspect the retrieval pipeline.';
+  $('retrievalDebugResults').innerHTML='';
+  openModal('retrievalDebugModal');
+}
+async function runRetrievalDebugger(){
+  if(!state.activeId){toast('Open a chat first.');return;}
+  const query=$('retrievalDebugQuery').value.trim();if(!query){toast('Enter a question to inspect.');return;}
+  const b=$('runRetrievalDebug');b.disabled=true;
+  try{
+    const d=await api('/api/retrieval/debug',{method:'POST',body:JSON.stringify({query,conversation_id:state.activeId}),timeoutMs:45000});
+    $('retrievalDebugSummary').textContent=Number(d.candidate_count||0)+' candidates → '+Number(d.selected_count||0)+' selected · Global '+(d.include_global?'included':'off');
+    const root=$('retrievalDebugResults');root.innerHTML='';
+    for(const x of d.evaluated||[]){
+      const el=document.createElement('div');el.className='retrieval-result '+(x.selected?'selected':'rejected');
+      const reason=x.selected?(x.retrieval_reasons||[]).join(' · '):(x.rejection_reason||'not selected');
+      el.innerHTML='<div class="retrieval-result-top"><strong>'+esc(x.title||'Knowledge')+' · section '+(Number(x.chunk_index||0)+1)+'</strong><span class="retrieval-result-badge">'+(x.selected?'SELECTED':'REJECTED')+'</span></div><small>relevance '+Number(x.relevance_score||0).toFixed(3)+' · similarity '+Number(x.similarity||0).toFixed(3)+' · '+esc(reason)+'</small><p>'+esc(x.content_preview||'')+'</p>';
+      root.append(el);
+    }
+    if(!(d.evaluated||[]).length)root.innerHTML='<div class="knowledge-empty"><strong>No candidates</strong><p>No ready Knowledge passage cleared the scoped semantic search for this question.</p></div>';
+  }catch(e){toast(e.message||'Could not inspect retrieval',4500);}
+  finally{b.disabled=false;}
+}
+
 function renderKnowledge(){
   const root=$('knowledgeList');root.innerHTML='';
   const q=$('knowledgeSearch').value.trim().toLowerCase();
   const type=$('knowledgeTypeFilter').value;
   const statusFilter=$('knowledgeStatusFilter').value;
   const raw=state.knowledge||[],all=knowledgeLogicalSources(raw);
+  const processingCount=all.filter(x=>['queued','processing'].includes(String(x.status||''))).length;
+  const attentionCount=all.filter(sourceNeedsAttention).length;
+  if($('knowledgeViewAllCount'))$('knowledgeViewAllCount').textContent=all.length;
+  if($('knowledgeViewProcessingCount'))$('knowledgeViewProcessingCount').textContent=processingCount;
+  if($('knowledgeViewAttentionCount'))$('knowledgeViewAttentionCount').textContent=attentionCount;
+  for(const [name,id] of [['all','knowledgeViewAll'],['processing','knowledgeViewProcessing'],['attention','knowledgeViewAttention']]){
+    if($(id))$(id).classList.toggle('active',state.knowledgeView===name);
+  }
   const allIds=new Set(all.map(x=>String(x.id)));
   for(const id of [...state.knowledgeSelected])if(!allIds.has(id))state.knowledgeSelected.delete(id);
   $('knowledgeCount').textContent=all.length+' source'+(all.length===1?'':'s');
@@ -596,7 +737,9 @@ function renderKnowledge(){
     const matchesQ=!q||String(x.title||'').toLowerCase().includes(q)||collection.includes(q)||String(x.source_type||'').toLowerCase().includes(q);
     const matchesType=type==='all'||String(x.source_type||'')===type;
     const matchesStatus=statusFilter==='all'||String(x.status||'')===statusFilter;
-    return matchesQ&&matchesType&&matchesStatus;
+    const matchesView=state.knowledgeView==='processing'?['queued','processing'].includes(String(x.status||'')):
+      state.knowledgeView==='attention'?sourceNeedsAttention(x):true;
+    return matchesQ&&matchesType&&matchesStatus&&matchesView;
   });
   state.knowledgeVisibleIds=rows.map(x=>String(x.id));
   syncKnowledgeBulkUI();
@@ -627,11 +770,14 @@ function renderKnowledge(){
       (Number(x.char_count||0).toLocaleString()+' chars · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks'+pdfDetail);
     const globalSource=x.global_enabled===true||!(x.conversation_ids||[]).length;
     const scopeBadge='<span class="knowledge-scope-chip '+(globalSource?'global':'chat')+'">'+(globalSource?'GLOBAL':'CHAT ONLY')+'</span>';
+    const quality=x.quality||{},qualityChip='<span class="knowledge-quality-chip '+esc(String(quality.label||'unrated'))+'">'+esc(qualityLabel(quality))+'</span>';
     const selected=state.knowledgeSelected.has(String(x.id));
     const el=document.createElement('div');el.className='knowledge-item knowledge-library-item'+(x.enabled===false?' disabled':'')+(selected?' selected':'');
-    el.innerHTML='<label class="knowledge-row-select" title="Select source"><input class="select-source" type="checkbox" '+(selected?'checked':'')+' /></label><div class="knowledge-item-main"><div class="knowledge-source-icon">'+typeIcon+'</div><div class="knowledge-source-copy"><div class="knowledge-source-title-row"><strong>'+esc(x.title||'Untitled')+'</strong>'+scopeBadge+(collection?'<span class="knowledge-collection-chip">'+esc(collection)+'</span>':'')+'</div><small>'+typeLabel+(partCount>1?' · '+partCount+' segments':'')+' · '+baseDetail+' · '+esc(status)+'</small>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'</div></div><div class="knowledge-actions"><button class="move-source" title="Move between Global and specialist chats">Move</button><button class="toggle" title="'+(x.enabled===false?'Enable':'Disable')+'">'+(x.enabled===false?'○':'●')+'</button><button class="rename" title="Rename">✎</button>'+((state.knowledgeScope==='chat'&&globalSource)?'':'<button class="delete danger-hover" title="'+(state.knowledgeScope==='chat'?'Remove from this chat':'Delete permanently')+'">×</button>')+'</div>';
+    el.innerHTML='<label class="knowledge-row-select" title="Select source"><input class="select-source" type="checkbox" '+(selected?'checked':'')+' /></label><div class="knowledge-item-main"><div class="knowledge-source-icon">'+typeIcon+'</div><div class="knowledge-source-copy"><div class="knowledge-source-title-row"><strong>'+esc(x.title||'Untitled')+'</strong>'+scopeBadge+qualityChip+(collection?'<span class="knowledge-collection-chip">'+esc(collection)+'</span>':'')+'</div><small>'+typeLabel+(partCount>1?' · '+partCount+' segments':'')+' · '+baseDetail+' · '+esc(status)+'</small>'+(status==='processing'||status==='queued'?'<div class="mini-progress"><span style="width:'+Math.max(3,pct)+'%"></span></div>':'')+(x.last_error?'<small class="source-error">'+esc(x.last_error)+'</small>':'')+'</div></div><div class="knowledge-actions"><button class="inspect-source" title="Inspect extracted Knowledge">Inspect</button>'+(quality.can_retry?'<button class="retry-source" title="Retry failed processing">Retry</button>':'')+'<button class="move-source" title="Move between Global and specialist chats">Move</button><button class="toggle" title="'+(x.enabled===false?'Enable':'Disable')+'">'+(x.enabled===false?'○':'●')+'</button><button class="rename" title="Rename">✎</button>'+((state.knowledgeScope==='chat'&&globalSource)?'':'<button class="delete danger-hover" title="'+(state.knowledgeScope==='chat'?'Remove from this chat':'Delete permanently')+'">×</button>')+'</div>';
     const items=x._items||[x];
     el.querySelector('.select-source').onchange=e=>{if(e.target.checked)state.knowledgeSelected.add(String(x.id));else state.knowledgeSelected.delete(String(x.id));renderKnowledge();};
+    el.querySelector('.inspect-source').onclick=()=>openKnowledgeInspector(x);
+    const retry=el.querySelector('.retry-source');if(retry)retry.onclick=()=>retryKnowledgeFromRow(x);
     el.querySelector('.move-source').onclick=()=>openMoveKnowledge(x);
     el.querySelector('.toggle').onclick=async()=>{const value=x.enabled===false;await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id),{method:'PATCH',body:JSON.stringify({enabled:value})})));loadKnowledge();};
     el.querySelector('.rename').onclick=async()=>{const n=prompt('Rename knowledge source',x.title||'');if(n&&n.trim()){await Promise.all(items.map(i=>api('/api/knowledge/'+encodeURIComponent(i.id),{method:'PATCH',body:JSON.stringify({title:n.trim().slice(0,160)})})));loadKnowledge();}};
@@ -1333,8 +1479,9 @@ $('videoInput').onchange=e=>addFiles(e.target.files);
 $('addWebsiteAttachment').onclick=addWebsiteAttachment;
 $('websiteUrlInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();addWebsiteAttachment();}};
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));document.querySelectorAll('.modal').forEach(m=>m.onclick=e=>{if(e.target===m)closeModal(m.id);});
-$('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeGlobalTab').onclick=()=>switchKnowledgeTab('global');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('useGlobalKnowledgeToggle').onchange=e=>setUseGlobalKnowledge(e.target.checked);$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;bindFileDropzone('knowledgeFile','knowledgeFileDropzone','knowledgeTextFileLabel',files=>stageTextKnowledgeFiles(files));$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('knowledgeSelectAll').onchange=e=>toggleAllVisibleKnowledge(e.target.checked);$('bulkMoveKnowledge').onclick=openBulkMoveKnowledge;$('clearKnowledgeSelection').onclick=()=>clearKnowledgeSelection();bindFileDropzone('knowledgeMediaFile','knowledgeMediaDropzone','knowledgeMediaFileLabel',files=>{if(files.length>10)toast('Only the first 10 files were selected. Upload the rest in another batch.',5000);state.knowledgeMediaFiles=files.slice(0,10);previewKnowledgeMedia(state.knowledgeMediaFiles);});$('saveKnowledgeMedia').onclick=ingestKnowledgeMedia;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
+$('knowledgeLibraryTab').onclick=()=>switchKnowledgeTab('library');$('knowledgeGlobalTab').onclick=()=>switchKnowledgeTab('global');$('knowledgeAddTab').onclick=()=>switchKnowledgeTab('add');$('knowledgeViewAll').onclick=()=>setKnowledgeView('all');$('knowledgeViewProcessing').onclick=()=>setKnowledgeView('processing');$('knowledgeViewAttention').onclick=()=>setKnowledgeView('attention');$('openRetrievalDebug').onclick=openRetrievalDebugger;$('useGlobalKnowledgeToggle').onchange=e=>setUseGlobalKnowledge(e.target.checked);$('importKnowledgeUrls').onclick=importKnowledgeUrls;$('saveKnowledge').onclick=ingestTextKnowledge;bindFileDropzone('knowledgeFile','knowledgeFileDropzone','knowledgeTextFileLabel',files=>stageTextKnowledgeFiles(files));$('saveKnowledgeFiles').onclick=ingestFileKnowledge;$('knowledgeSelectAll').onchange=e=>toggleAllVisibleKnowledge(e.target.checked);$('bulkMoveKnowledge').onclick=openBulkMoveKnowledge;$('clearKnowledgeSelection').onclick=()=>clearKnowledgeSelection();bindFileDropzone('knowledgeMediaFile','knowledgeMediaDropzone','knowledgeMediaFileLabel',files=>{if(files.length>10)toast('Only the first 10 files were selected. Upload the rest in another batch.',5000);state.knowledgeMediaFiles=files.slice(0,10);previewKnowledgeMedia(state.knowledgeMediaFiles);});$('saveKnowledgeMedia').onclick=ingestKnowledgeMedia;$('refreshKnowledge').onclick=loadKnowledge;$('knowledgeSearch').oninput=renderKnowledge;$('knowledgeTypeFilter').onchange=renderKnowledge;$('knowledgeStatusFilter').onchange=renderKnowledge;$('refreshMemory').onclick=loadMemories;$('memorySearch').oninput=renderMemories;
 $('webToggle').onclick=()=>{state.webResearch=!state.webResearch;localStorage.setItem('uncensor.webResearch',String(state.webResearch));syncSettings();if(state.webResearch&&!state.webResearchEnabled)toast('Web Research is temporarily unavailable.',4500);};$('knowledgeToggle').onclick=()=>{state.knowledgeEnabled=!state.knowledgeEnabled;localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));syncSettings();};
+$('saveInspectorMetadata').onclick=saveInspectorMetadata;$('testInspectorSource').onclick=testInspectorSource;$('retryInspectorSource').onclick=retryInspectorSource;$('searchInspectorSource').onclick=()=>loadKnowledgeInspector($('knowledgeInspectorSearch').value.trim()).catch(e=>toast(e.message||'Search failed'));$('knowledgeInspectorSearch').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('searchInspectorSource').click();}};$('runRetrievalDebug').onclick=runRetrievalDebugger;$('retrievalDebugQuery').onkeydown=e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();runRetrievalDebugger();}};
 $('modelSelect').onchange=()=>localStorage.setItem('uncensor.model',$('modelSelect').value);$('runDiagnostics').onclick=()=>runDiagnostics(true);$('exportFullBackup').onclick=exportFullBackup;$('saveRenameChat').onclick=saveChatRename;$('cancelRenameChat').onclick=()=>closeModal('renameChatModal');$('renameChatInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();saveChatRename();}};$('confirmMoveKnowledge').onclick=confirmMoveKnowledge;$('cancelMoveKnowledge').onclick=()=>closeModal('moveKnowledgeModal');$('revokeThisDevice').onclick=revokeCurrentDevice;$('generatePairingCode').onclick=generatePairingCode;$('redeemPairingCode').onclick=redeemPairingCode;$('pairingCodeInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();redeemPairingCode();}};$('rotateRecoveryKey').onclick=rotateRecoveryKeyFromDevice;$('copyRecoveryKey').onclick=()=>{const v=$('recoveryKeyValue').textContent||'';if(v){navigator.clipboard.writeText(v);toast('Recovery key copied');}};
 $('saveSettings').onclick=async()=>{state.knowledgeEnabled=$('settingKnowledge').checked;state.showSources=$('settingSources').checked;state.mode=$('responseMode').value;state.style=$('stylePrompt').value.trim()||DEFAULT_STYLE;const k=$('accessKeyInput').value.trim();if(k)localStorage.setItem('uncensor.accessKey',k);localStorage.setItem('uncensor.knowledge',String(state.knowledgeEnabled));localStorage.setItem('uncensor.sources',String(state.showSources));localStorage.setItem('uncensor.mode',state.mode);localStorage.setItem('uncensor.style',state.style);try{if(accessKey())await enrollDeviceSession();syncSettings();closeModal('settingsModal');renderMessages();toast(sessionToken()?'Settings saved · device enrolled':'Settings saved');if(hasPrivateAuth()){await loadChats();const remembered=localStorage.getItem('uncensor.activeChatId');if(!state.activeId&&remembered&&state.conversations.some(c=>c.id===remembered))await openChat(remembered);await Promise.all([loadKnowledge(),loadMemories(),status(),health()]);}}catch(e){localStorage.removeItem('uncensor.accessKey');syncSettings();toast((e.message||'Could not enroll device')+' Use a one-time link code from your enrolled phone if needed.',5500);}};
 window.addEventListener('error',e=>recordClientError('window',e.error||e.message));

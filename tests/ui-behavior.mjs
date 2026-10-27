@@ -12,7 +12,7 @@ assert.ok(app.includes("localStorage.getItem('uncensor.activeChatId')"),'Startup
 assert.ok(app.includes('seq!==state.chatOpenSeq'),'Stale chat loads must not overwrite a newer selection');
 assert.ok(!/function newChat\([^)]*\)\{[^}]*controller\.abort/.test(app),'Switching to a new chat must not cancel another chat');
 assert.ok(/#renameChatInput\s*\{\s*font-size:\s*16px/.test(css),'Rename input must not trigger iOS focus zoom');
-assert.ok(html.includes('app.js?v=36')&&html.includes('styles.css?v=31'),'Cache URLs must match the release');
+assert.ok(html.includes('app.js?v=39')&&html.includes('styles.css?v=39'),'Cache URLs must match the release');
 
 const helpers=app.slice(app.indexOf('function activeThreadKey()'),app.indexOf('function when(v)'));
 assert.ok(helpers.startsWith('function activeThreadKey()')&&helpers.includes('function bindRunConversation('));
@@ -78,3 +78,9 @@ assert.equal(state.activeId,'C','A slow previous response must not switch the se
 assert.equal(state.messages[0].content,'C','Slow chat load must not overwrite the newest conversation');
 
 console.log('Concurrent chat and mobile navigation regression tests passed');
+
+assert.ok(html.includes('id="knowledgeInspectorModal"'),'Knowledge Inspector modal must exist');
+assert.ok(html.includes('id="knowledgeViewProcessing"')&&html.includes('id="knowledgeViewAttention"'),'Persistent Processing and Needs Attention views must exist');
+assert.ok(app.includes('openKnowledgeInspector')&&app.includes('loadKnowledgeInspector'),'Inspector must load extracted source text');
+assert.ok(app.includes("setKnowledgeView('processing')")&&app.includes("setKnowledgeView('attention')"),'Processing views must be wired');
+assert.ok(app.includes('openRetrievalDebugger')&&app.includes('/api/retrieval/debug'),'Retrieval debugger must be wired');
