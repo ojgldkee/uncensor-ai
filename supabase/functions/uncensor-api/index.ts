@@ -557,18 +557,24 @@ async function ensureConversation(id: string | null, firstMessage: string) {
   return read.data
 }
 
+function cleanStoredChatText(value:any){
+  return String(value||'')
+    .replace(/\n?\[\[NEXT\]\]\s*[\s\S]*?\s*\[\[\/NEXT\]\]\s*$/i,'')
+    .replace(/\s*\[(?:K|W)\d+\]/gi,'')
+    .trim()
+}
 async function recentMessages(conversationId: string, summaryThrough: number) {
   if(summaryThrough>0){
     const q=await db.from('private_ai_messages_read').select('role,content,created_at')
       .eq('conversation_id',conversationId).order('created_at',{ascending:true})
       .range(summaryThrough,summaryThrough+47)
     if(q.error)throw q.error
-    return (q.data||[]).map((m:any)=>({role:m.role,content:String(m.content||'').slice(0,50000)}))
+    return (q.data||[]).map((m:any)=>({role:m.role,content:cleanStoredChatText(m.content).slice(0,50000)}))
   }
   const q=await db.from('private_ai_messages_read').select('role,content,created_at')
     .eq('conversation_id',conversationId).order('created_at',{ascending:false}).limit(48)
   if(q.error)throw q.error
-  return (q.data||[]).reverse().map((m:any)=>({role:m.role,content:String(m.content||'').slice(0,50000)}))
+  return (q.data||[]).reverse().map((m:any)=>({role:m.role,content:cleanStoredChatText(m.content).slice(0,50000)}))
 }
 
 async function saveMessage(conversationId: string, role: string, content: string, model?: string, sources?: unknown[], attachments?: unknown[]) {
@@ -625,6 +631,9 @@ async function regenerateMessage(messageId:string,req:Request){
     return json({error:'This response is already inside the rolling summary. Start a new follow-up instead of rewriting summarized history.'},409)
   }
   const body=await req.json().catch(()=>({}))
+  const rate=await db.rpc('private_ai_take_rate_limit',{minute_limit:12,day_limit:400})
+  if(rate.error)return json({error:'Rate limiter unavailable.'},503)
+  if(rate.data!==true)return json({error:'Request limit reached. Try again shortly.',rate_limited:true},429)
   const spend=await rollingSpend()
   if(DAILY_CAP>0&&spend>=DAILY_CAP)return json({error:'Rolling 24-hour spend cap reached.',spent:spend,cap:DAILY_CAP},429)
   const query=String(user.content||'').trim()||'Regenerate the previous response'
