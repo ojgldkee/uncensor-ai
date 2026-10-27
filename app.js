@@ -613,7 +613,7 @@ function renderKnowledge(){
     const typeIcon=x.source_type==='website'?'↗':x.source_type==='file'?'▤':x.source_type==='video'?'▶':x.source_type==='audio'?'♪':'✎';
     const partCount=(x._items||[]).length;
     const mediaDetail=media?(' · '+esc(String(meta.media_stage||status).replaceAll('_',' '))+(meta.duration_seconds?' · '+Math.floor(Number(meta.duration_seconds)/60)+':'+String(Math.floor(Number(meta.duration_seconds)%60)).padStart(2,'0'):'')+(meta.reference_sections?' · '+Number(meta.reference_sections)+' refs':'')+(meta.transcript_method==='visual_video_analysis'?' · visual analysis only (spoken audio may be incomplete)':'')):'';
-    const pdfDetail=meta.pdf_pages?(' · '+Number(meta.pdf_pages)+' pages · '+Number(meta.pdf_ocr_pages||0)+' OCR · '+Number(meta.pdf_words||0).toLocaleString()+' words'):'';
+    const pdfDetail=meta.pdf_pages?(' · '+Number(meta.pdf_pages)+' pages · '+Number(meta.pdf_ocr_pages||0)+' OCR'+(Number(meta.pdf_ai_ocr_pages||0)?' ('+Number(meta.pdf_ai_ocr_pages||0)+' AI fallback)':'')+' · '+Number(meta.pdf_words||0).toLocaleString()+' words'):'';
     const baseDetail=media?(formatBytes(Number(meta.file_size||0))+mediaDetail):(Number(x.char_count||0).toLocaleString()+' chars · '+done.toLocaleString()+'/'+total.toLocaleString()+' chunks'+pdfDetail);
     const globalSource=x.global_enabled===true||!(x.conversation_ids||[]).length;
     const scopeBadge='<span class="knowledge-scope-chip '+(globalSource?'global':'chat')+'">'+(globalSource?'GLOBAL':'CHAT ONLY')+'</span>';
@@ -643,8 +643,8 @@ function renderKnowledgeFileQueue(){
   root.innerHTML='<div class="knowledge-upload-summary"><strong>'+(selected?selected+' file'+(selected===1?'':'s')+' staged':'Upload activity')+'</strong><span>'+(selected?selected+' ready to upload · ':'')+ready+' ready'+(duplicates?' · '+duplicates+' duplicate'+(duplicates===1?'':'s')+' blocked':'')+(working?' · '+working+' working':'')+(failed?' · '+failed+' failed':'')+'</span></div>';
   rows.forEach(r=>{
     const el=document.createElement('div');el.className='knowledge-upload-row'+(r.status==='selected'?' staged':'');
-    el.innerHTML='<div class="knowledge-upload-top"><div class="knowledge-upload-name">'+esc(r.name)+'</div><div class="knowledge-upload-row-actions"><div class="knowledge-upload-state '+esc(r.status)+'">'+esc(r.label||r.status)+'</div>'+(r.status==='selected'?'<button class="remove-staged" type="button" title="Remove before upload">×</button>':'')+'</div></div><div class="knowledge-upload-meta"><span>'+formatBytes(r.size)+'</span><span>'+esc(r.detail||'')+'</span></div><div class="knowledge-upload-bar"><span style="width:'+Math.max(0,Math.min(100,Number(r.pct||0)))+'%"></span></div>';
-    const remove=el.querySelector('.remove-staged');if(remove)remove.onclick=()=>removeStagedKnowledgeFile(r.id);
+    el.innerHTML='<div class="knowledge-upload-top"><div class="knowledge-upload-name">'+esc(r.name)+'</div><div class="knowledge-upload-row-actions"><div class="knowledge-upload-state '+esc(r.status)+'">'+esc(r.label||r.status)+'</div>'+(r.status==='selected'?'<button class="remove-staged" type="button" title="Remove before upload">×</button>':(r.status==='failed'&&r.file?'<button class="retry-staged" type="button" title="Retry this PDF">Retry</button>':''))+'</div></div><div class="knowledge-upload-meta"><span>'+formatBytes(r.size)+'</span><span>'+esc(r.detail||'')+'</span></div><div class="knowledge-upload-bar"><span style="width:'+Math.max(0,Math.min(100,Number(r.pct||0)))+'%"></span></div>';
+    const remove=el.querySelector('.remove-staged');if(remove)remove.onclick=()=>removeStagedKnowledgeFile(r.id);const retry=el.querySelector('.retry-staged');if(retry)retry.onclick=()=>{r.status='selected';r.label='retry ready';r.pct=0;r.detail='Ready to scan again';renderKnowledgeFileQueue();};
     root.append(el);
   });
   setFilePickerLabel('knowledgeFile','knowledgeTextFileLabel');
@@ -945,6 +945,8 @@ let pdfjsKnowledgePromise=null;
 let tesseractKnowledgePromise=null;
 const PDF_OCR_MIN_CHARS=220;
 const PDF_OCR_MIN_WORDS=35;
+const TESSERACT_SCRIPT='https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/6.0.1/tesseract.min.js';
+const TESSERACT_WORKER='https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/6.0.1/worker.min.js';
 function needsPdfOcr(text){
   const clean=String(text||'').replace(/\s+/g,' ').trim();
   const words=clean.match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/gu)||[];
@@ -956,42 +958,59 @@ async function loadKnowledgeOcr(){
       if(globalThis.Tesseract?.createWorker){resolve(globalThis.Tesseract);return;}
       const tag=document.createElement('script');
       let done=false;
-      const finish=(err,api)=>{
+      const finish=(err,ocrApi)=>{
         if(done)return;
         done=true;clearTimeout(timer);
-        if(err)reject(err);else resolve(api);
+        if(err)reject(err);else resolve(ocrApi);
       };
-      const timer=setTimeout(()=>finish(new Error('OCR download timed out. Check your connection and try again.')),30000);
+      const timer=setTimeout(()=>finish(new Error('Local OCR download timed out.')),20000);
       tag.async=true;
-      tag.src='https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/tesseract.min.js';
-      // Version-pinned CDN library. Prefer self-hosting for stronger supply-chain protection.
+      tag.src=TESSERACT_SCRIPT;
       tag.crossOrigin='anonymous';
       tag.onload=()=>globalThis.Tesseract?.createWorker
         ?finish(null,globalThis.Tesseract)
-        :finish(new Error('The OCR reader did not initialize correctly.'));
-      tag.onerror=()=>finish(new Error('OCR could not load. Check your connection and try again.'));
+        :finish(new Error('The local OCR reader did not initialize correctly.'));
+      tag.onerror=()=>finish(new Error('Local OCR could not load.'));
       document.head.append(tag);
     }).catch(e=>{tesseractKnowledgePromise=null;throw e;});
   }
   return tesseractKnowledgePromise;
 }
-async function recognizePdfPage(page,worker){
+async function renderPdfPageCanvas(page,maxWidth=1800,maxHeight=2200){
   const original=page.getViewport({scale:1});
-  const scale=Math.max(1.2,Math.min(2,1800/original.width,2200/original.height));
+  const scale=Math.max(1.15,Math.min(2,maxWidth/original.width,maxHeight/original.height));
   const viewport=page.getViewport({scale});
   const canvas=document.createElement('canvas');
   canvas.width=Math.ceil(viewport.width);
   canvas.height=Math.ceil(viewport.height);
+  const context=canvas.getContext('2d',{alpha:false,willReadFrequently:true});
+  if(!context){canvas.width=0;canvas.height=0;throw new Error('Your browser could not render this PDF page.');}
+  await page.render({canvasContext:context,viewport}).promise;
+  return canvas;
+}
+function releasePdfCanvas(canvas){try{canvas.width=0;canvas.height=0;}catch{}}
+async function recognizePdfPage(page,worker){
+  const canvas=await renderPdfPageCanvas(page,1800,2200);
   try{
-    const context=canvas.getContext('2d',{alpha:false,willReadFrequently:true});
-    if(!context)throw new Error('Your browser could not render this PDF page for OCR.');
-    await page.render({canvasContext:context,viewport}).promise;
     const result=await worker.recognize(canvas);
     return String(result?.data?.text||'').replace(/\r\n/g,'\n').replace(/[ \t]+\n/g,'\n').replace(/\n{4,}/g,'\n\n\n').trim();
-  }finally{
-    // Rendering one page at a time keeps large screenshot PDFs usable on phones.
-    canvas.width=0;canvas.height=0;
-  }
+  }finally{releasePdfCanvas(canvas);}
+}
+async function recognizePdfPageWithAi(page,pageNumber){
+  const canvas=await renderPdfPageCanvas(page,1350,1750);
+  try{
+    let imageData='';
+    try{imageData=canvas.toDataURL('image/jpeg',0.78);}
+    catch{imageData=canvas.toDataURL('image/png');}
+    if(!imageData||imageData.length<100)throw new Error('Could not prepare the PDF page for fallback OCR.');
+    const d=await api('/api/knowledge/ocr-page',{
+      method:'POST',timeoutMs:120000,
+      body:JSON.stringify({page_number:pageNumber,image_data:imageData})
+    });
+    const text=String(d?.text||'').replace(/\r\n/g,'\n').replace(/[ \t]+\n/g,'\n').replace(/\n{4,}/g,'\n\n\n').trim();
+    if(!text)throw new Error('AI OCR returned no readable text.');
+    return text;
+  }finally{releasePdfCanvas(canvas);}
 }
 async function loadPdfJs(){
   if(!pdfjsKnowledgePromise){
@@ -1001,7 +1020,7 @@ async function loadPdfJs(){
     ]).catch(e=>{pdfjsKnowledgePromise=null;throw e;});
   }
   try{return await pdfjsKnowledgePromise;}
-  catch(e){throw new Error('The PDF reader could not load. Check your connection and try the PDF again.');}
+  catch{throw new Error('The PDF reader could not load. Check your connection and try the PDF again.');}
 }
 async function extractKnowledgePdf(file,onProgress){
   const pdfjs=await loadPdfJs();
@@ -1013,8 +1032,16 @@ async function extractKnowledgePdf(file,onProgress){
     if(/password/i.test(msg))throw new Error('This PDF is password-protected. Remove the password and upload it again.');
     throw new Error('This PDF could not be opened. It may be damaged or use an unsupported format.');
   }
-  const pages=[],stats={pages:pdfDoc.numPages,ocrPages:0,selectablePages:0,readablePages:0,unreadablePages:[],weakOcrPages:[],words:0};
-  let ocrWorker=null;
+  const pages=[],stats={
+    pages:pdfDoc.numPages,ocrPages:0,localOcrPages:0,aiOcrPages:0,selectablePages:0,
+    readablePages:0,unreadablePages:[],weakOcrPages:[],aiFallbackPages:[],words:0,
+    localOcrUnavailable:false
+  };
+  let ocrWorker=null,localOcrDisabled=false;
+  const disableLocalOcr=async()=>{
+    localOcrDisabled=true;stats.localOcrUnavailable=true;
+    if(ocrWorker){try{await ocrWorker.terminate();}catch{}ocrWorker=null;}
+  };
   try{
     for(let n=1;n<=pdfDoc.numPages;n++){
       const page=await pdfDoc.getPage(n);
@@ -1028,8 +1055,7 @@ async function extractKnowledgePdf(file,onProgress){
           extracted+=item.str+(item.hasEOL?'\n':' ');
           if(y!==undefined)lastY=y;
         }
-        let text=extracted.trim(),method='text';
-        let containsImage=false;
+        let text=extracted.trim(),method='text',containsImage=false;
         if(needsPdfOcr(text)){
           const operators=await page.getOperatorList();
           const imageOps=new Set([
@@ -1040,45 +1066,69 @@ async function extractKnowledgePdf(file,onProgress){
           containsImage=operators.fnArray.some(op=>imageOps.has(op));
         }
         if(needsPdfOcr(text)&&(containsImage||!text)){
-          if(onProgress)onProgress(n,pdfDoc.numPages,'ocr-loading',stats);
-          if(!ocrWorker){
-            const reader=await loadKnowledgeOcr();
-            try{ocrWorker=await reader.createWorker('eng',1);}
-            catch(e){throw new Error('OCR initialization failed. '+String(e?.message||e));}
+          stats.ocrPages++;
+          let recognized='',usedAi=false,localError=null;
+          if(!localOcrDisabled){
+            if(!ocrWorker){
+              try{
+                if(onProgress)onProgress(n,pdfDoc.numPages,'ocr-loading',stats);
+                const reader=await loadKnowledgeOcr();
+                ocrWorker=await reader.createWorker('eng',1,{
+                  workerPath:TESSERACT_WORKER,
+                  workerBlobURL:false,
+                });
+              }catch(e){localError=e;await disableLocalOcr();}
+            }
+            if(ocrWorker){
+              try{
+                if(onProgress)onProgress(n,pdfDoc.numPages,'ocr',stats);
+                recognized=await recognizePdfPage(page,ocrWorker);
+                if(recognized)stats.localOcrPages++;
+              }catch(e){localError=e;recognized='';await disableLocalOcr();}
+            }
           }
-          if(onProgress)onProgress(n,pdfDoc.numPages,'ocr',stats);
-          const recognized=await recognizePdfPage(page,ocrWorker);
+          const localChars=recognized.replace(/\s/g,'').length;
+          if(!recognized||(containsImage&&localChars<80)){
+            try{
+              if(onProgress)onProgress(n,pdfDoc.numPages,'ocr-ai',stats);
+              const remote=await recognizePdfPageWithAi(page,n);
+              if(remote){
+                recognized=remote;usedAi=true;stats.aiOcrPages++;stats.aiFallbackPages.push(n);
+              }
+            }catch(e){
+              if(!recognized){
+                const localMsg=localError?(' Local OCR: '+String(localError?.message||localError)+'.'):'';
+                throw new Error('Page '+n+' OCR failed.'+localMsg+' AI fallback: '+String(e?.message||e));
+              }
+            }
+          }
           if(containsImage&&recognized.length<Math.max(45,text.length*1.1))stats.weakOcrPages.push(n);
-          // The selectable layer often contains only the screenshot's heading.
           if(recognized.length>text.length*1.25||!text){
             text=recognized;
-            method='ocr';
+            method=usedAi?'ocr-ai':'ocr';
           }else if(recognized&&!text.includes(recognized)&&recognized.length>80){
             text+='\n'+recognized;
-            method='text+ocr';
+            method=usedAi?'text+ocr-ai':'text+ocr';
           }
-          stats.ocrPages++;
         }else stats.selectablePages++;
         if(text.replace(/[^\p{L}\p{N}]/gu,'').length>=12)stats.readablePages++;
         else stats.unreadablePages.push(n);
         stats.words+=(text.match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/gu)||[]).length;
         pages.push('[PDF page '+n+' | '+method+']\n'+text);
         if(onProgress)onProgress(n,pdfDoc.numPages,'complete',stats);
-      }finally{
-        try{page.cleanup();}catch{}
-      }
-      // Give the browser a chance to paint progress on long PDFs.
-      if(n%3===0)await new Promise(resolve=>setTimeout(resolve,0));
+      }finally{try{page.cleanup();}catch{}}
+      if(n%2===0)await new Promise(resolve=>setTimeout(resolve,0));
     }
   }finally{
     if(ocrWorker)try{await ocrWorker.terminate();}catch{}
     try{await pdfDoc.destroy();}catch{}
   }
   const result=pages.join('\n\n');
-  if(stats.words<20||stats.readablePages<Math.max(1,Math.ceil(stats.pages*.75))){
+  const requiredReadable=Math.max(1,Math.ceil(stats.pages*.90));
+  if(stats.words<20||stats.readablePages<requiredReadable){
     throw new Error('PDF scanning could not read enough pages ('+stats.readablePages+'/'+stats.pages+'). No incomplete Knowledge was saved.');
   }
-  if(stats.ocrPages>=4&&stats.weakOcrPages.length>Math.max(2,Math.floor(stats.ocrPages*.25))){
+  if(stats.ocrPages>=4&&stats.weakOcrPages.length>Math.max(2,Math.floor(stats.ocrPages*.20))){
     throw new Error('OCR could not reliably read '+stats.weakOcrPages.length+' screenshot pages. Try a higher-quality PDF. No incomplete Knowledge was saved.');
   }
   return {text:result,stats};
@@ -1120,11 +1170,11 @@ async function ingestFileKnowledge(){
           setKnowledgeFileStatus(row,'scanning',20,'Reading PDF · screenshot pages use OCR automatically','scanning PDF');
           const scanned=await extractKnowledgePdf(file,(page,total,stage,stats)=>{
             const progress=20+Math.round(page/total*35);
-            const label=stage==='ocr-loading'?'Preparing local OCR':stage==='ocr'?'Scanning screenshot': 'Finished page';
-            setKnowledgeFileStatus(row,'scanning',progress,label+' '+page+' / '+total+' · '+stats.ocrPages+' OCR · '+stats.words.toLocaleString()+' words','scanning PDF');
+            const label=stage==='ocr-loading'?'Preparing local OCR':stage==='ocr'?'Scanning screenshot locally':stage==='ocr-ai'?'Using private AI OCR fallback':'Finished page';
+            setKnowledgeFileStatus(row,'scanning',progress,label+' '+page+' / '+total+' · '+stats.ocrPages+' OCR'+(stats.aiOcrPages?' · '+stats.aiOcrPages+' AI fallback':'')+' · '+stats.words.toLocaleString()+' words','scanning PDF');
           });
           cleanedText=scanned.text;pdfStats=scanned.stats;
-          setKnowledgeFileStatus(row,'scanning',55,'Read '+pdfStats.pages+' pages · '+pdfStats.ocrPages+' OCR · '+pdfStats.words.toLocaleString()+' words','text extracted');
+          setKnowledgeFileStatus(row,'scanning',55,'Read '+pdfStats.pages+' pages · '+pdfStats.ocrPages+' OCR'+(pdfStats.aiOcrPages?' · '+pdfStats.aiOcrPages+' AI fallback':'')+' · '+pdfStats.words.toLocaleString()+' words','text extracted');
         }else if(html&&file.size<=25*1024*1024){
           setKnowledgeFileStatus(row,'cleaning',20,'Removing saved-page code, images, CSS, and scripts','cleaning HTML');
           cleanedText=cleanHtmlClient(await file.text());
@@ -1147,7 +1197,7 @@ async function ingestFileKnowledge(){
               file_group:group,file_name:file.name,file_size:file.size,file_sha256:fileSha256,
               part:part+1,parts,cleaned_html:html&&cleanedText!==null,pdf_extracted:pdf,
               ...(pdfStats?{pdf_pages:pdfStats.pages,pdf_ocr_pages:pdfStats.ocrPages,
-                pdf_readable_pages:pdfStats.readablePages,pdf_words:pdfStats.words,ocr_engine:pdfStats.ocrPages?'tesseract-v6':'not-needed'}:{})
+                pdf_readable_pages:pdfStats.readablePages,pdf_words:pdfStats.words,pdf_local_ocr_pages:pdfStats.localOcrPages,pdf_ai_ocr_pages:pdfStats.aiOcrPages,pdf_ocr_fallback_pages:pdfStats.aiFallbackPages,ocr_engine:pdfStats.aiOcrPages?'tesseract-v6+private-vision-fallback':(pdfStats.ocrPages?'tesseract-v6':'not-needed')}:{})
             }
           },conversationId);
           if(r.duplicate){
@@ -1170,7 +1220,7 @@ async function ingestFileKnowledge(){
       }
     }
     $('knowledgeFile').value='';setFilePickerLabel('knowledgeFile','knowledgeTextFileLabel');
-    for(const row of rowsToProcess)delete row.file;
+    for(const row of rowsToProcess)if(row.status!=='failed')delete row.file;
     await loadKnowledge();
     switchKnowledgeTab('library');
     if(duplicates&&duplicates===files.length)toast('All selected files were already in your library.',4000);
