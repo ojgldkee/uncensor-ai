@@ -20,7 +20,7 @@ if(!savedStyle||savedStyle===LEGACY_DEFAULT_STYLE)localStorage.setItem('uncensor
 const state={conversations:[],activeId:null,activeConversation:null,messages:[],knowledge:[],knowledgeScope:'global',knowledgeView:'all',knowledgeLoadSeq:0,knowledgeChatCount:0,knowledgeGlobalCount:0,knowledgeSelected:new Set(),knowledgeVisibleIds:[],moveKnowledgeSources:[],inspectorSourceId:null,renameChatTarget:null,messageActionTarget:null,memories:[],pendingAttachments:[],knowledgeFileUploads:[],knowledgePollTimer:null,webResearch:localStorage.getItem('uncensor.webResearch')==='true',webResearchEnabled:false,pendingRuns:new Map(),draftId:crypto.randomUUID(),chatOpenSeq:0,knowledgeEnabled:localStorage.getItem('uncensor.knowledge')!=='false',mode:localStorage.getItem('uncensor.mode')||'direct',style:localStorage.getItem('uncensor.style')||DEFAULT_STYLE,followLatest:true};
 
 function esc(v){return String(v||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
-function stripModelRefs(v){return String(v||'').replace(/\s*\[(?:K|W)\d+\]/gi,'');}
+function stripModelRefs(v){return String(v||'').replace(/\s*\[(?:K|W)\d+\]/gi,'').replace(/\b(?:K|W)\d+(?:\/(?:K|W)\d+)*(?:'s)?\b/gi,'the source');}
 function splitAssistantMeta(v){
   const raw=String(v||'');
   const m=raw.match(/\n?\[\[NEXT\]\]\s*([\s\S]*?)\s*\[\[\/NEXT\]\]\s*$/i);
@@ -460,7 +460,7 @@ async function send(text){
   const user={role:'user',content:t||'Please analyze the attached item.',attachments:sendingAttachments};
   const assistant={role:'assistant',content:'',sources:[]};
   let node=null;
-  state.pendingRuns.set(run.key,run);
+  state.pendingRuns.set(run.key,run);state.followLatest=true;
   state.messages.push(user);appendMessage(user);
   clearPendingAttachments();
   $('input').value='';autoGrow();refreshSendingUI();renderConversations();
