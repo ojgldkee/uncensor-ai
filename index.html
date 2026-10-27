@@ -16,13 +16,13 @@
     #app{min-height:100dvh}
   </style>
   <link rel="manifest" href="./manifest.webmanifest?v=27" />
-  <link rel="stylesheet" href="./styles.css?v=40" />
+  <link rel="stylesheet" href="./styles.css?v=41" />
 </head>
 <body>
   <div id="app" class="app-shell">
     <aside id="sidebar" class="sidebar" aria-label="Conversations">
       <div class="brand-row">
-        <div class="brand-mark">U</div>
+        <div class="brand-mark neural-mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><b></b></div>
         <div class="brand-copy"><strong>Uncensor AI</strong><span>Private personal intelligence</span></div>
         <button id="closeSidebar" class="icon-btn mobile-only" aria-label="Close sidebar">×</button>
       </div>
@@ -65,18 +65,20 @@
           </select>
         </div>
         <div class="topbar-right">
-          <button id="webToggle" class="chip research-chip" title="Search the current web and compare sources">Web off</button>
-          <button id="knowledgeToggle" class="chip active" title="Use your saved knowledge">Knowledge on</button>
+          <button id="webToggle" class="chip research-chip desktop-chat-toggle" title="Search the current web and compare sources">Web off</button>
+          <button id="knowledgeToggle" class="chip active desktop-chat-toggle" title="Use your saved knowledge">Knowledge on</button>
           <button id="exportChat" class="icon-btn desktop-action" title="Export current chat">⇩</button>
           <button id="deleteChatTop" class="icon-btn desktop-action danger-hover" title="Permanently delete current chat">⌫</button>
+          <button id="chatControlsBtn" class="icon-btn mobile-only chat-controls-btn" aria-label="Chat controls">•••</button>
           <span id="statusDot" class="status-dot" title="Backend status"></span>
         </div>
       </header>
 
       <section id="messages" class="messages" aria-live="polite"></section>
+      <button id="jumpLatest" class="jump-latest hidden" type="button" aria-label="Jump to latest message">↓</button>
 
       <section id="emptyState" class="empty-state">
-        <div class="hero-orb">U</div>
+        <div class="hero-orb neural-mark large" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><b></b></div>
         <h1>Ask directly. Learn deeply.</h1>
         <p>A private AI workspace that can use your own knowledge without losing your conversations.</p>
         <div class="prompt-grid">
@@ -179,7 +181,6 @@
           <button id="knowledgeViewAll" class="knowledge-view-tab active" type="button">Library <span id="knowledgeViewAllCount">0</span></button>
           <button id="knowledgeViewProcessing" class="knowledge-view-tab" type="button">Processing <span id="knowledgeViewProcessingCount">0</span></button>
           <button id="knowledgeViewAttention" class="knowledge-view-tab" type="button">Needs attention <span id="knowledgeViewAttentionCount">0</span></button>
-          <button id="openRetrievalDebug" class="knowledge-view-tab debug" type="button">Why these sources?</button>
         </div>
         <div class="knowledge-library-controls">
           <div class="knowledge-search knowledge-search-large"><input id="knowledgeSearch" type="search" placeholder="Search this chat's Knowledge…" /></div>
@@ -407,7 +408,6 @@
         <button class="icon-btn" data-close="settingsModal">×</button>
       </div>
       <label class="setting-row"><span><strong>Use personal knowledge</strong><small>Search your library before answering.</small></span><input id="settingKnowledge" type="checkbox" checked /></label>
-      <label class="setting-row"><span><strong>Show source chips</strong><small>Show which saved sources were retrieved.</small></span><input id="settingSources" type="checkbox" checked /></label>
       <label class="setting-stack"><span><strong>Response mode</strong><small>Direct is the low-friction default. Teacher favors explanations; Precise favors concise factual answers.</small></span>
         <select id="responseMode">
           <option value="direct">Direct</option><option value="teacher">Teacher</option><option value="precise">Precise</option><option value="deep">Deep analysis</option>
@@ -453,6 +453,60 @@
     </div>
   </div>
 
+  <div id="messageActionSheet" class="modal message-action-modal hidden" role="dialog" aria-modal="true" aria-labelledby="messageActionTitle">
+    <div class="message-action-sheet">
+      <div class="sheet-handle"></div>
+      <div class="message-action-head">
+        <div><strong id="messageActionTitle">Message actions</strong><small id="messageActionSubtitle">Assistant response</small></div>
+        <button class="icon-btn" data-close="messageActionSheet" aria-label="Close">×</button>
+      </div>
+      <div id="messageActionMain" class="message-action-list">
+        <button id="messageCopyAction" type="button"><span>⧉</span><b>Copy text</b></button>
+        <button id="messageSelectAction" type="button"><span>⌁</span><b>Select text</b></button>
+        <button id="messageRegenerateAction" type="button"><span>↻</span><b>Regenerate</b></button>
+        <button id="messageShareAction" type="button"><span>↗</span><b>Share</b></button>
+        <button id="messageSourcesAction" type="button"><span>▤</span><b>View sources</b></button>
+        <button id="messageImageAction" type="button"><span>▧</span><b>Save as image</b></button>
+        <button id="messageDeleteAction" class="danger-action" type="button"><span>⌫</span><b>Delete exchange</b></button>
+      </div>
+      <div id="messageSourcesPanel" class="message-sources-panel hidden">
+        <div class="message-sources-head"><button id="messageSourcesBack" class="text-btn" type="button">← Back</button><strong>Sources used</strong></div>
+        <div id="messageSourcesList" class="message-sources-list"></div>
+        <button id="saveMessageWebSources" class="secondary-btn hidden" type="button">Save web sources to Knowledge</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="selectTextModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="selectTextTitle">
+    <div class="modal-card select-text-card">
+      <div class="modal-head">
+        <div><h2 id="selectTextTitle">Select text</h2><p>Press and hold to select exactly what you want.</p></div>
+        <button class="icon-btn" data-close="selectTextModal">×</button>
+      </div>
+      <div id="selectTextContent" class="select-text-content"></div>
+      <div class="modal-footer-actions"><button id="copySelectedAll" class="secondary-btn" type="button">Copy all</button></div>
+    </div>
+  </div>
+
+  <div id="chatControlsSheet" class="modal message-action-modal hidden" role="dialog" aria-modal="true" aria-labelledby="chatControlsTitle">
+    <div class="message-action-sheet">
+      <div class="sheet-handle"></div>
+      <div class="message-action-head">
+        <div><strong id="chatControlsTitle">Chat controls</strong><small id="chatControlsSubtitle">Current conversation</small></div>
+        <button class="icon-btn" data-close="chatControlsSheet">×</button>
+      </div>
+      <div class="chat-control-card">
+        <div><span><strong>Web research</strong><small>Search current public information when needed.</small></span><button id="mobileWebToggle" class="toggle-pill" type="button">Off</button></div>
+        <div><span><strong>Knowledge</strong><small>Use your saved sources for this answer.</small></span><button id="mobileKnowledgeToggle" class="toggle-pill active" type="button">On</button></div>
+      </div>
+      <div class="message-action-list compact">
+        <button id="mobileExportChat" type="button"><span>⇩</span><b>Export chat</b></button>
+        <button id="mobileRenameChat" type="button"><span>✎</span><b>Rename chat</b></button>
+        <button id="mobileDeleteChat" class="danger-action" type="button"><span>⌫</span><b>Delete chat</b></button>
+      </div>
+    </div>
+  </div>
+
   <div id="memoryModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="memoryTitle">
     <div class="modal-card knowledge-modal-card">
       <div class="modal-head">
@@ -467,6 +521,6 @@
 
   <div id="toast" class="toast hidden"></div>
   <script src="./config.js?v=27"></script>
-  <script src="./app.js?v=40" defer></script>
+  <script src="./app.js?v=41" defer></script>
 </body>
 </html>

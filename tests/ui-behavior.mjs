@@ -12,7 +12,7 @@ assert.ok(app.includes("localStorage.getItem('uncensor.activeChatId')"),'Startup
 assert.ok(app.includes('seq!==state.chatOpenSeq'),'Stale chat loads must not overwrite a newer selection');
 assert.ok(!/function newChat\([^)]*\)\{[^}]*controller\.abort/.test(app),'Switching to a new chat must not cancel another chat');
 assert.ok(/#renameChatInput\s*\{\s*font-size:\s*16px/.test(css),'Rename input must not trigger iOS focus zoom');
-assert.ok(html.includes('app.js?v=40')&&html.includes('styles.css?v=40'),'Cache URLs must match the release');
+assert.ok(html.includes('app.js?v=41')&&html.includes('styles.css?v=41'),'Cache URLs must match the release');
 
 const helpers=app.slice(app.indexOf('function activeThreadKey()'),app.indexOf('function when(v)'));
 assert.ok(helpers.startsWith('function activeThreadKey()')&&helpers.includes('function bindRunConversation('));

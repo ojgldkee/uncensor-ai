@@ -730,6 +730,13 @@ async function processHtmlReprocess(job: QueueJob) {
   return 'HTML cleaned: '+String(rows.length)+' raw chunks -> '+String(replaced.data||parts.length)+' readable chunks'
 }
 
+function cleanChatTranscriptText(value:any){
+  return String(value||'')
+    .replace(/\n?\[\[NEXT\]\]\s*[\s\S]*?\s*\[\[\/NEXT\]\]\s*$/i,'')
+    .replace(/\s*\[(?:K|W)\d+\]/gi,'')
+    .trim()
+}
+
 async function processSummary(job: QueueJob) {
   const conversationId = String(job.message.conversation_id || '')
   const target = Number(job.message.target_message_count || 0)
@@ -752,7 +759,7 @@ async function processSummary(job: QueueJob) {
   if (msgs.error) throw msgs.error
 
   const transcript = (msgs.data || []).map((m: any, i: number) =>
-    String(through + i + 1) + '. ' + String(m.role).toUpperCase() + ': ' + String(m.content).slice(0, 18000)
+    String(through + i + 1) + '. ' + String(m.role).toUpperCase() + ': ' + cleanChatTranscriptText(m.content).slice(0, 18000)
   ).join('\n\n')
 
   const result = await llm(
@@ -796,7 +803,7 @@ async function processMemories(job: QueueJob) {
   if (!rows.length) { await finish(job.msg_id); return 'no messages' }
 
   const transcript = rows.map((m: any) =>
-    String(m.role).toUpperCase() + ': ' + String(m.content).slice(0, 12000)
+    String(m.role).toUpperCase() + ': ' + cleanChatTranscriptText(m.content).slice(0, 12000)
   ).join('\n\n')
 
   const result = await llm(

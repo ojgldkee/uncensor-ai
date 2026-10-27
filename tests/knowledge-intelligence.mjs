@@ -40,6 +40,6 @@ assert.ok(app.includes('knowledge-card-footer')&&app.includes('knowledge-more-me
 assert.ok(app.includes('askInspectorSource')&&api.includes('askKnowledgeSource'),'Source-only Q&A must be wired');
 assert.ok(app.includes('suggestInspectorMetadata')&&api.includes('suggestKnowledgeMetadata'),'Metadata suggestions must be wired');
 assert.ok(api.includes('cleanKnowledgeText'),'Inspector/evidence must clean parser wrapper noise');
-assert.ok(app.includes('knowledge-source-link'),'Knowledge citation chips must open source inspection');
+assert.ok(app.includes('renderMessageSources'),'Knowledge sources must remain inspectable from the private message menu');
 assert.ok(html.includes('id="inspectorMetadataPanel"'),'Advanced source metadata must be collapsible');
 assert.ok(html.includes('id="knowledgeInspectorAsk"'),'Inspector must expose source-only Q&A');
