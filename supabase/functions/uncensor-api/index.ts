@@ -465,6 +465,16 @@ async function relevantContext(query: string, includeKnowledge: boolean, convers
   }
 }
 
+function cleanKnowledgeText(value:any){
+  return String(value||'')
+    .replace(/^\s*\[PDF parser block\s+\d+\]\s*/i,'')
+    .replace(/^\s*<file\b[^>]*>\s*/gmi,'')
+    .replace(/^\s*<\/file>\s*$/gmi,'')
+    .replace(/^\s*<page\b[^>]*>\s*/gmi,'')
+    .replace(/^\s*<\/page>\s*$/gmi,'')
+    .replace(/\n{3,}/g,'\n\n')
+    .trim()
+}
 function knowledgePageNumber(content:any){
   const m=String(content||'').match(/\[PDF page\s+(\d+)/i)
   return m?Number(m[1]):null
@@ -485,7 +495,7 @@ function knowledgeEvidence(chunks:any[]){
     return '[K'+String(i+1)+'] '+String(k.title||'Knowledge')+
       (page?' (PDF page '+page+', section '+String(Number(k.chunk_index||0)+1)+')':' (section '+String(Number(k.chunk_index||0)+1)+')')+
       (labels.length?' ['+labels.join(' · ')+']':'')+
-      '\n'+String(k.content||'').slice(0,4200)
+      '\n'+cleanKnowledgeText(k.content).slice(0,4200)
   }).join('\n\n')
 }
 function knowledgeSourceMeta(chunks:any[]){
@@ -1198,7 +1208,7 @@ async function inspectKnowledgeSource(id:string,req:Request){
   return json({
     ok:true,
     source:{...source,quality:knowledgeQuality(source)},
-    chunks:result.data||[],
+    chunks:(result.data||[]).map((x:any)=>({...x,content:cleanKnowledgeText(x.content)})),
     match_count:Number(result.count||0),
     offset,limit,query:q,
   })
@@ -1231,7 +1241,7 @@ async function testKnowledgeSource(id:string){
     .eq('source_id',id).order('chunk_index',{ascending:true}).limit(18)
   if(q.error)throw q.error
   if(!(q.data||[]).length)return json({error:'This source has no searchable chunks yet.'},409)
-  const evidence=(q.data||[]).map((x:any)=>'[section '+String(Number(x.chunk_index)+1)+'] '+String(x.content||'').slice(0,2500)).join('\n\n')
+  const evidence=(q.data||[]).map((x:any)=>'[section '+String(Number(x.chunk_index)+1)+'] '+cleanKnowledgeText(x.content).slice(0,2500)).join('\n\n')
   const result=await openRouterOnce(DEFAULT_MODEL,[
     {role:'system',content:'Create exactly 5 concise verification questions that can only be answered from the supplied source excerpts. Do not answer them. Avoid generic questions. Prefer specific tactics, numbers, examples, mechanisms, disagreements, names or decisions found in the source.'},
     {role:'user',content:'SOURCE: '+String(source.title||'Knowledge')+'\n\n'+evidence}
@@ -1245,6 +1255,75 @@ async function testKnowledgeSource(id:string){
   }
   return json({ok:true,title:source.title,questions:result.content})
 }
+function looseJsonObject(text:any){
+  const clean=String(text||'').trim().replace(/^\`\`\`(?:json)?\s*/i,'').replace(/\s*\`\`\`$/,'').trim()
+  const a=clean.indexOf('{'),b=clean.lastIndexOf('}')
+  if(a<0||b<=a)throw new Error('Metadata model returned invalid JSON')
+  return JSON.parse(clean.slice(a,b+1))
+}
+function keywordSet(value:any){
+  return new Set((String(value||'').toLowerCase().match(/[a-z0-9]{3,}/g)||[])
+    .filter(x=>!['the','and','for','with','that','this','from','what','when','where','how','why','are','was','were','have','has','your','about'].includes(x)))
+}
+function sourceQuestionChunks(question:string,rows:any[]){
+  const q=keywordSet(question)
+  return rows.map((row:any)=>{
+    const clean=cleanKnowledgeText(row.content),terms=keywordSet(clean.slice(0,7000))
+    let overlap=0;for(const t of q)if(terms.has(t))overlap++
+    return {...row,clean,_score:overlap+(clean.toLowerCase().includes(question.toLowerCase())?5:0)}
+  }).sort((a:any,b:any)=>b._score-a._score||Number(a.chunk_index)-Number(b.chunk_index)).slice(0,12)
+}
+async function askKnowledgeSource(id:string,req:Request){
+  if(!OPENROUTER_KEY)return json({error:'OpenRouter is not configured.'},503)
+  const body=await req.json().catch(()=>({}))
+  const question=String(body?.question||'').trim().slice(0,5000)
+  if(!question)return json({error:'A question is required.'},400)
+  const source=await readKnowledgeSource(id)
+  if(!source)return json({error:'Knowledge source not found'},404)
+  const q=await db.from('private_ai_knowledge_chunks_read').select('chunk_index,content')
+    .eq('source_id',id).order('chunk_index',{ascending:true}).limit(300)
+  if(q.error)throw q.error
+  const picked=sourceQuestionChunks(question,q.data||[])
+  if(!picked.length)return json({error:'This source has no searchable Knowledge yet.'},409)
+  const evidence=picked.map((x:any,i:number)=>'[S'+String(i+1)+'] section '+String(Number(x.chunk_index)+1)+'\n'+x.clean.slice(0,3400)).join('\n\n')
+  const result=await openRouterOnce(DEFAULT_MODEL,[
+    {role:'system',content:'Answer the question using ONLY the supplied excerpts from one private Knowledge source. Cite factual claims with [S1], [S2], etc. If the excerpts do not support an answer, say exactly what you could not find. Do not fill gaps with general knowledge or web knowledge. Be concise but specific.'},
+    {role:'user',content:'SOURCE: '+String(source.title||'Knowledge')+'\nQUESTION: '+question+'\n\nEXCERPTS:\n'+evidence}
+  ])
+  if(result.usage){
+    try{await db.from('private_ai_usage').insert({
+      conversation_id:null,model:result.model,operation:'knowledge_source_ask',
+      prompt_tokens:Number(result.usage.prompt_tokens||0),completion_tokens:Number(result.usage.completion_tokens||0),
+      total_tokens:Number(result.usage.total_tokens||0),cost_usd:Number(result.usage.cost||0)
+    })}catch{}
+  }
+  return json({ok:true,title:source.title,content:result.content,sections:picked.map((x:any,i:number)=>({ref:'S'+String(i+1),chunk_index:x.chunk_index}))})
+}
+async function suggestKnowledgeMetadata(id:string){
+  if(!OPENROUTER_KEY)return json({error:'OpenRouter is not configured.'},503)
+  const source=await readKnowledgeSource(id)
+  if(!source)return json({error:'Knowledge source not found'},404)
+  const q=await db.from('private_ai_knowledge_chunks_read').select('chunk_index,content')
+    .eq('source_id',id).order('chunk_index',{ascending:true}).limit(20)
+  if(q.error)throw q.error
+  if(!(q.data||[]).length)return json({error:'This source has no searchable chunks yet.'},409)
+  const excerpts=(q.data||[]).map((x:any)=>cleanKnowledgeText(x.content).slice(0,1800)).join('\n\n---\n\n')
+  const result=await openRouterOnce(DEFAULT_MODEL,[
+    {role:'system',content:'Infer conservative library metadata from the supplied private source excerpts. Return JSON only with keys topic, subtopic, author, source_date, evidence_type, authority, tags. evidence_type must be one of unrated, official, research, practitioner, community, personal_data, reference. authority is 1-5 and reflects evidentiary authority, not how much you agree with it. tags is an array of at most 8 short strings. Do not invent an author or date; use empty strings when unknown.'},
+    {role:'user',content:'TITLE: '+String(source.title||'Knowledge')+'\nSOURCE TYPE: '+String(source.source_type||'')+'\n\nEXCERPTS:\n'+excerpts}
+  ])
+  const parsed=looseJsonObject(result.content)
+  const safe=safeKnowledgeMetadataPatch(parsed)
+  if(result.usage){
+    try{await db.from('private_ai_usage').insert({
+      conversation_id:null,model:result.model,operation:'knowledge_metadata_suggestion',
+      prompt_tokens:Number(result.usage.prompt_tokens||0),completion_tokens:Number(result.usage.completion_tokens||0),
+      total_tokens:Number(result.usage.total_tokens||0),cost_usd:Number(result.usage.cost||0)
+    })}catch{}
+  }
+  return json({ok:true,metadata:safe})
+}
+
 async function retrievalDebug(req:Request){
   const body=await req.json().catch(()=>({}))
   const query=String(body?.query||'').trim().slice(0,5000)
@@ -1816,6 +1895,9 @@ async function statusRoute() {
     persistent_pdf_processing_enabled: true,
     knowledge_inspector_enabled: true,
     explainable_reranking_enabled: true,
+    knowledge_source_qa_enabled: true,
+    knowledge_metadata_suggestions_enabled: true,
+    cleaned_knowledge_display_enabled: true,
     last_worker_run_at: cfg.data?.last_worker_run_at || null,
     last_worker_success_at: cfg.data?.last_worker_success_at || null,
     last_worker_error: cfg.data?.last_worker_error || null,
@@ -1912,6 +1994,12 @@ Deno.serve(async (req) => {
 
     const testSource=path.match(/^\/api\/knowledge\/([^/]+)\/test$/)
     if(testSource&&req.method==='POST')return testKnowledgeSource(decodeURIComponent(testSource[1]))
+
+    const askSource=path.match(/^\/api\/knowledge\/([^/]+)\/ask$/)
+    if(askSource&&req.method==='POST')return askKnowledgeSource(decodeURIComponent(askSource[1]),req)
+
+    const suggestSource=path.match(/^\/api\/knowledge\/([^/]+)\/suggest-metadata$/)
+    if(suggestSource&&req.method==='POST')return suggestKnowledgeMetadata(decodeURIComponent(suggestSource[1]))
 
     const source = path.match(/^\/api\/knowledge\/([^/]+)$/)
     if (source) {
