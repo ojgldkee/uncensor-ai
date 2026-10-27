@@ -558,13 +558,17 @@ async function ensureConversation(id: string | null, firstMessage: string) {
 }
 
 async function recentMessages(conversationId: string, summaryThrough: number) {
-  let query = db.from('private_ai_messages_read').select('role,content,created_at')
-    .eq('conversation_id', conversationId).order('created_at', { ascending: true })
-  if (summaryThrough > 0) query = query.range(summaryThrough, summaryThrough + 47)
-  else query = query.limit(48)
-  const q = await query
-  if (q.error) throw q.error
-  return (q.data || []).map((m: any) => ({ role: m.role, content: String(m.content || '').slice(0, 50000) }))
+  if(summaryThrough>0){
+    const q=await db.from('private_ai_messages_read').select('role,content,created_at')
+      .eq('conversation_id',conversationId).order('created_at',{ascending:true})
+      .range(summaryThrough,summaryThrough+47)
+    if(q.error)throw q.error
+    return (q.data||[]).map((m:any)=>({role:m.role,content:String(m.content||'').slice(0,50000)}))
+  }
+  const q=await db.from('private_ai_messages_read').select('role,content,created_at')
+    .eq('conversation_id',conversationId).order('created_at',{ascending:false}).limit(48)
+  if(q.error)throw q.error
+  return (q.data||[]).reverse().map((m:any)=>({role:m.role,content:String(m.content||'').slice(0,50000)}))
 }
 
 async function saveMessage(conversationId: string, role: string, content: string, model?: string, sources?: unknown[], attachments?: unknown[]) {
@@ -625,9 +629,14 @@ async function regenerateMessage(messageId:string,req:Request){
   if(DAILY_CAP>0&&spend>=DAILY_CAP)return json({error:'Rolling 24-hour spend cap reached.',spent:spend,cap:DAILY_CAP},429)
   const query=String(user.content||'').trim()||'Regenerate the previous response'
   const ctx=await relevantContext(query,body?.use_knowledge!==false,String(conversation.id))
-  const recent=await db.from('private_ai_messages_read').select('id,role,content,created_at')
-    .eq('conversation_id',conversation.id).neq('id',messageId).order('created_at',{ascending:true}).limit(48)
-  if(recent.error)throw recent.error
+  let recentQuery=db.from('private_ai_messages_read').select('id,role,content,created_at')
+    .eq('conversation_id',conversation.id).neq('id',messageId)
+  if(Number(conversation.summary_through_message_count||0)>0){
+    recentQuery=recentQuery.order('created_at',{ascending:true})
+      .range(Number(conversation.summary_through_message_count||0),Number(conversation.summary_through_message_count||0)+47)
+  }else recentQuery=recentQuery.order('created_at',{ascending:false}).limit(48)
+  const recent=await recentQuery;if(recent.error)throw recent.error
+  if(Number(conversation.summary_through_message_count||0)===0)recent.data?.reverse()
   const memoryText=(ctx.memories||[]).slice(0,12).map((m:any)=>'- ['+String(m.category||'memory')+'] '+String(m.content||'')).join('\n')
   const knowledgeText=knowledgeEvidence(ctx.knowledge)
   const system=[
@@ -652,6 +661,7 @@ async function regenerateMessage(messageId:string,req:Request){
   const updated=await db.from('private_ai_messages').update({content:result.content,model:result.model,sources:sourceMeta})
     .eq('id',messageId).select('id').single()
   if(updated.error)throw updated.error
+  await db.from('private_ai_conversations').update({updated_at:new Date().toISOString()}).eq('id',conversation.id)
   if(result.usage)await db.from('private_ai_usage').insert({
     conversation_id:conversation.id,model:result.model,operation:'regenerate',
     prompt_tokens:Number(result.usage.prompt_tokens||0),completion_tokens:Number(result.usage.completion_tokens||0),
