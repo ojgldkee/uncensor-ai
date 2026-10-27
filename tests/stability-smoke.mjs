@@ -18,7 +18,9 @@ expect(missing.length===0,'app.js references missing HTML IDs: '+missing.join(',
 
 expect(/knowledgeFile[^>]+accept=["'][^"']*\.pdf/i.test(html),'Knowledge file picker must accept PDF files');
 expect(app.includes("application/pdf")&&app.includes("extractKnowledgePdf"),'PDF Knowledge extraction support is missing');
-expect(html.includes('app.js?v=34'),'Frontend cache version must be v34');
+expect(app.includes("/api/knowledge/ocr-page")&&api.includes("ocrPdfPage"),'PDF AI OCR fallback is missing');
+expect(api.includes("knowledgePageNumber")&&api.includes("[PDF page"),'PDF page-aware retrieval is missing');
+expect(html.includes('app.js?v=35'),'Frontend cache version must be v35');
 expect(html.includes('styles.css?v=31'),'Styles cache version must be v31');
 expect(app.includes("/api/diagnostics")&&html.includes('id="runDiagnostics"'),'Diagnostics UI/endpoint wiring is missing');
 expect(api.includes("if (path === '/api/diagnostics'"),'Diagnostics backend route is missing');
