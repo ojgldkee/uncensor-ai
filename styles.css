@@ -385,3 +385,14 @@
   .toast{width:auto;min-width:0;font-size:11px;padding:9px 11px}
   .jump-latest{right:14px}
 }
+
+/* v41.1: iPhone keyboard stays attached to the composer rather than shrinking the chat shell */
+:root{--keyboard-inset:0px}
+.app-shell,.main-panel{height:100dvh;height:var(--app-height);overflow:hidden}
+.composer-wrap{bottom:var(--keyboard-inset);transition:none}
+.quick-mode-btn{border:0;background:transparent;color:inherit;font:inherit;padding:3px 5px;border-radius:8px;cursor:pointer}
+.quick-mode-btn:focus-visible{outline:2px solid #67e3ff}
+@media(max-width:700px){
+ .composer-wrap{padding-bottom:max(10px,env(safe-area-inset-bottom))}
+ .composer-meta{display:flex;align-items:center;justify-content:center}
+}
