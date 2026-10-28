@@ -404,13 +404,15 @@ function renderAttachmentTray(){
 }
 async function uploadAttachment(file){
   const kind=fileKind(file);
+  const subtitle=/\.(srt|vtt)$/i.test(String(file.name||''));
+  const uploadMime=subtitle?'text/plain':(file.type||'application/octet-stream');
   const max=kind==='audio'?16*1024*1024:kind==='video'?100*1024*1024:50*1024*1024;
   if(file.size>max)throw new Error(file.name+' is too large. Current limit is '+Math.round(max/1048576)+' MB.');
-  const signed=await api('/api/uploads/sign',{method:'POST',body:JSON.stringify({name:file.name,mime:file.type||'application/octet-stream',size:file.size,kind})});
+  const signed=await api('/api/uploads/sign',{method:'POST',body:JSON.stringify({name:file.name,mime:uploadMime,size:file.size,kind})});
   const fd=new FormData();fd.append('cacheControl','3600');fd.append('',file);
   const up=await fetch(signed.signed_url,{method:'PUT',headers:{'x-upsert':'false'},body:fd});
   if(!up.ok)throw new Error('Upload failed for '+file.name);
-  state.pendingAttachments.push({kind,name:file.name,mime:file.type||'application/octet-stream',size:file.size,path:signed.path});
+  state.pendingAttachments.push({kind,name:file.name,mime:uploadMime,size:file.size,path:signed.path});
   renderAttachmentTray();
 }
 async function addFiles(files){
