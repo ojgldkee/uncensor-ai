@@ -222,7 +222,11 @@ function updateLayoutMetrics(){
   const h=Math.ceil(wrap?.getBoundingClientRect().height||156);
   document.documentElement.style.setProperty('--composer-space',(h+10)+'px');
   const vv=window.visualViewport;
-  document.documentElement.style.setProperty('--app-height',Math.max(320,Math.round(vv?.height||window.innerHeight))+'px');
+  // Keep the chat shell at its full height. On iOS, shrinking the entire
+  // shell to visualViewport.height makes the composer jump up the page.
+  const keyboardInset=vv?Math.max(0,window.innerHeight-vv.height-vv.offsetTop):0;
+  document.documentElement.style.setProperty('--keyboard-inset',Math.round(keyboardInset)+'px');
+  document.documentElement.style.setProperty('--app-height',Math.max(320,window.innerHeight)+'px');
 }
 function autoGrow(){const e=$('input');e.style.height='auto';e.style.height=Math.min(200,e.scrollHeight)+'px';$('charCount').textContent=e.value.length.toLocaleString()+' / 50,000';requestAnimationFrame(updateLayoutMetrics);}
 function nearMessageBottom(){const root=$('messages');return root.scrollHeight-root.scrollTop-root.clientHeight<90;}
@@ -1749,4 +1753,7 @@ document.querySelectorAll('.prompt-card').forEach(b=>b.onclick=()=>{$('input').v
 
 const composerObserver=new ResizeObserver(()=>updateLayoutMetrics());const composerWrap=document.querySelector('.composer-wrap');if(composerWrap)composerObserver.observe(composerWrap);
 window.visualViewport?.addEventListener('resize',updateLayoutMetrics);window.visualViewport?.addEventListener('scroll',updateLayoutMetrics);window.addEventListener('resize',updateLayoutMetrics);
+$('quickModeBtn').onclick=()=>{const choices=['direct','teacher','precise','deep'];const index=choices.indexOf(state.mode);const next=choices[(index+1)%choices.length];state.mode=next;$('responseMode').value=next;localStorage.setItem('uncensor.responseMode',next);syncSettings();toast('Response mode: '+({direct:'Direct',teacher:'Teacher',precise:'Precise',deep:'Deep analysis'}[next]));};
+$('input').addEventListener('focus',()=>{requestAnimationFrame(updateLayoutMetrics);setTimeout(updateLayoutMetrics,180);setTimeout(updateLayoutMetrics,400);});
+$('input').addEventListener('blur',()=>{requestAnimationFrame(updateLayoutMetrics);setTimeout(updateLayoutMetrics,180);});
 (async function(){const saved=localStorage.getItem('uncensor.model');if(saved&&[...$('modelSelect').options].some(o=>o.value===saved))$('modelSelect').value=saved;syncSettings();autoGrow();header();updateLayoutMetrics();await status();if(configuredApiBase()){if(!sessionToken()&&accessKey()){try{await enrollDeviceSession();}catch{localStorage.removeItem('uncensor.accessKey');syncSettings();}}if(hasPrivateAuth()){await loadChats();const lastId=localStorage.getItem('uncensor.activeChatId');if(!state.chatOpenSeq&&lastId&&state.conversations.some(c=>c.id===lastId))await openChat(lastId);else if(lastId&&!state.conversations.some(c=>c.id===lastId))localStorage.removeItem('uncensor.activeChatId');state.knowledgeScope=state.activeId?'chat':'global';await Promise.all([loadKnowledge(),loadMemories(),health()]);}else{authPromptShown=true;syncSettings();openModal('settingsModal');}}})();
