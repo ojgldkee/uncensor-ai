@@ -369,6 +369,26 @@ function isSupportedKnowledgeTextFile(file){
   return /\.(txt|md|csv|json|html?|log|srt|vtt|js|ts|tsx|jsx|py|sql|css)$/i.test(String(file?.name||'')) ||
     /^text\//i.test(String(file?.type||'')) || String(file?.type||'').toLowerCase()==='application/json';
 }
+function normalizeSubtitleTranscript(raw,filename){
+  const input=String(raw||'').replace(/^\uFEFF/,'').replace(/\r\n?/g,'\n');
+  const isVtt=/\.vtt$/i.test(filename);
+  const lines=input.split('\n');
+  const output=[];let cue=[];
+  function flush(){
+    if(!cue.length)return;
+    const filtered=cue.filter(line=>line.trim()&&!/^\d+$/.test(line.trim())&&!/^\d{2}:\d{2}:\d{2}[,.]\d{3}\s*-->/.test(line.trim())&&!/^\d{2}:\d{2}[,.]\d{3}\s*-->/.test(line.trim())&&!/^NOTE(?:\s|$)/i.test(line.trim()));
+    let content=filtered.join(' ').replace(/<[^>]+>/g,'').replace(/\{\\[^}]+\}/g,'').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/\s+/g,' ').trim();
+    if(content&&content!==output[output.length-1])output.push(content);
+    cue=[];
+  }
+  for(const line of lines){
+    if(!line.trim()){flush();continue;}
+    if(isVtt&&(/^(WEBVTT|Kind:|Language:)/i.test(line.trim())))continue;
+    cue.push(line);
+  }
+  flush();
+  return output.join('\n\n')||input;
+}
 function formatBytes(n){n=Number(n||0);if(n<1024)return n+' B';if(n<1048576)return(n/1024).toFixed(1)+' KB';return(n/1048576).toFixed(n>10485760?0:1)+' MB';}
 function attIcon(kind){return kind==='image'?'▧':kind==='video'?'▶':kind==='audio'?'♪':kind==='pdf'?'PDF':kind==='url'?'↗':'▤';}
 function renderAttachmentTray(){
@@ -1162,7 +1182,7 @@ function bindFileDropzone(inputId,zoneId,labelId,onFiles){
   const sanitize=(files)=>{
     if(inputId!=='knowledgeFile')return files;
     const good=files.filter(isSupportedKnowledgeTextFile),bad=files.filter(f=>!isSupportedKnowledgeTextFile(f));
-    if(bad.length)toast('Unsupported archive/binary file: '+bad[0].name+'. Extract ZIPs and upload the TXT/HTML files inside.',5000);
+    if(bad.length)toast('Unsupported file: '+bad[0].name+'. Upload SRT/VTT/TXT/PDF files individually; ZIP extraction is not supported.',5000);
     return good;
   };
   const deliver=(files)=>{
@@ -1490,7 +1510,7 @@ async function ingestFileKnowledge(){
   const files=rowsToProcess.map(r=>r.file);
   if(!files.length){toast('Stage one or more PDF or text files first.');return;}
   const unsupported=files.find(f=>!isSupportedKnowledgeTextFile(f));
-  if(unsupported){toast('Cannot index '+unsupported.name+'. Extract ZIP/archive files first and upload the TXT/HTML/JSON files inside.',5000);return;}
+  if(unsupported){toast('Cannot index '+unsupported.name+'. Upload SRT/VTT/TXT/PDF files directly; extract ZIP archives first.',5000);return;}
   const maxFileBytes=100*1024*1024;
   const segmentChars=3.5*1024*1024;
   for(const file of files){if(file.size>maxFileBytes){toast(file.name+' is over the 100 MB per-file limit.',4500);return;}}
@@ -1515,11 +1535,16 @@ async function ingestFileKnowledge(){
         }
 
         const html=/\.html?$/i.test(file.name); const pdf=/\.pdf$/i.test(file.name)||file.type==='application/pdf';
+        const subtitle=/\.(srt|vtt)$/i.test(file.name);
         let cleanedText=null,pdfStats=null;
         if(pdf){
           const persisted=await ingestKnowledgePdfPersistent(file,row,conversationId,fileSha256);
           if(persisted.duplicate)duplicates++;else queuedSources++;
           continue;
+        }else if(subtitle){
+          setKnowledgeFileStatus(row,'cleaning',20,'Removing subtitle timestamps and cue numbers','cleaning transcript');
+          cleanedText=normalizeSubtitleTranscript(await file.text(),file.name);
+          if(!cleanedText.trim())throw new Error('Transcript contains no readable text');
         }else if(html&&file.size<=25*1024*1024){
           setKnowledgeFileStatus(row,'cleaning',20,'Removing saved-page code, images, CSS, and scripts','cleaning HTML');
           cleanedText=cleanHtmlClient(await file.text());
@@ -1540,7 +1565,7 @@ async function ingestFileKnowledge(){
             title:file.name,text,type:'file',
             metadata:{
               file_group:group,file_name:file.name,file_size:file.size,file_sha256:fileSha256,
-              part:part+1,parts,cleaned_html:html&&cleanedText!==null,pdf_extracted:pdf,
+              part:part+1,parts,cleaned_html:html&&cleanedText!==null,subtitle_transcript:subtitle,subtitle_format:subtitle?file.name.split('.').pop().toLowerCase():null,pdf_extracted:pdf,
               ...(pdfStats?{pdf_pages:pdfStats.pages,pdf_ocr_pages:pdfStats.ocrPages,
                 pdf_readable_pages:pdfStats.readablePages,pdf_words:pdfStats.words,pdf_local_ocr_pages:pdfStats.localOcrPages,pdf_ai_ocr_pages:pdfStats.aiOcrPages,pdf_ocr_fallback_pages:pdfStats.aiFallbackPages,ocr_engine:pdfStats.aiOcrPages?'tesseract-v6+private-vision-fallback':(pdfStats.ocrPages?'tesseract-v6':'not-needed')}:{})
             }

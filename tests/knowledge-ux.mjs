@@ -26,6 +26,6 @@ assert.ok(api.includes('cleanKnowledgeText'),'Existing indexed parser noise must
 assert.ok(worker.includes('cleanPdfParserBlock'),'New PDF parser wrapper noise must be stripped before indexing');
 
 assert.ok(app.includes('renderMessageSources')&&app.includes('openKnowledgeInspector({id:s.source_id'),'Message source menu must open the exact saved source');
-assert.ok(html.includes('app.js?v=41')&&html.includes('styles.css?v=41'),'v41 cache URLs must be active');
+assert.ok(html.includes('app.js?v=41.2')&&html.includes('styles.css?v=41'),'v41 cache URLs must be active');
 
 console.log('v40 Knowledge UX, source verification, parser cleanup and citation navigation tests passed');

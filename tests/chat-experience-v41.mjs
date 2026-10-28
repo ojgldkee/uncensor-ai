@@ -47,6 +47,6 @@ assert.ok(css.includes('.desktop-chat-toggle{display:none!important}'),'Web/Know
 assert.ok(html.includes('neural-mark')&&css.includes('.neural-mark'),'v41 neural-core branding mark is missing');
 
 assert.ok(app.includes("localStorage.setItem('uncensor.clientErrors'"),'Client diagnostics should persist across refreshes');
-assert.ok(html.includes('app.js?v=41')&&html.includes('styles.css?v=41'),'v41 cache URLs must be active');
+assert.ok(html.includes('app.js?v=41.2')&&html.includes('styles.css?v=41'),'v41 cache URLs must be active');
 
 console.log('v41 chat experience, message actions, hidden source UI and mobile layout tests passed');

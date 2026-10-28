@@ -120,7 +120,7 @@
         <button class="attachment-action wide" id="attachKnowledge"><span>◆</span><strong>Add to Knowledge</strong><small>Save notes, files, transcripts, or research for future chats</small></button>
       </div>
       <input id="photoInput" type="file" accept="image/*" multiple hidden />
-      <input id="fileInput" type="file" accept=".pdf,.txt,.md,.csv,.json,.html,.htm,.log,.js,.ts,.tsx,.jsx,.py,.sql,.css,text/*,application/pdf,application/json" multiple hidden />
+      <input id="fileInput" type="file" accept=".pdf,.txt,.md,.csv,.json,.html,.htm,.log,.srt,.vtt,.js,.ts,.tsx,.jsx,.py,.sql,.css,text/*,application/pdf,application/json,application/x-subrip,text/vtt" multiple hidden />
       <input id="videoInput" type="file" accept="video/*" multiple hidden />
     </div>
   </div>
@@ -264,7 +264,7 @@
             <div class="knowledge-add-card-icon">▤</div>
             <h3>Documents & text files</h3>
             <p>Add scanned PDFs, screenshot discussions, transcripts, CSV, HTML, or code files. PDF screenshots are automatically read with OCR.</p>
-            <input id="knowledgeFile" class="native-file-input" type="file" multiple accept=".pdf,.txt,.md,.csv,.json,.html,.htm,.log,.srt,.vtt,.js,.ts,.tsx,.jsx,.py,.sql,.css,text/*,application/json,application/pdf" />
+            <input id="knowledgeFile" class="native-file-input" type="file" multiple accept=".pdf,.txt,.md,.csv,.json,.html,.htm,.log,.srt,.vtt,.js,.ts,.tsx,.jsx,.py,.sql,.css,text/*,application/json,application/pdf,application/x-subrip,text/vtt" />
             <label id="knowledgeFileDropzone" for="knowledgeFile" class="upload-dropzone">
               <span class="upload-dropzone-icon">↑</span>
               <span><strong>Choose multiple files</strong><small id="knowledgeTextFileLabel">Select several at once, then choose more anytime · drag & drop works too</small></span>
@@ -521,6 +521,6 @@
 
   <div id="toast" class="toast hidden"></div>
   <script src="./config.js?v=27"></script>
-  <script src="./app.js?v=41.1" defer></script>
+  <script src="./app.js?v=41.2.1" defer></script>
 </body>
 </html>
