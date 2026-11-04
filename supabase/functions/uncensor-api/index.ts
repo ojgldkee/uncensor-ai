@@ -730,40 +730,46 @@ async function deleteLatestExchange(messageId:string){
 }
 
 async function openRouterStream(model: string, messages: any[]) {
-  const candidates = [model, ...FALLBACK_MODELS].filter((x, i, a) => x && a.indexOf(x) === i)
+  const candidates = [model, ...FALLBACK_MODELS].filter((x, i, a) => x && a.indexOf(x) === i).slice(0, 3)
+  const deadline = Date.now() + 105000 // Remain below the Edge Function's request idle limit.
   let last = 'No model provider succeeded'
   for (const candidate of candidates) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            authorization: 'Bearer ' + OPENROUTER_KEY,
-            'content-type': 'application/json',
-            'X-Title': 'Uncensor AI',
-          },
-          body: JSON.stringify({
-            model: candidate,
-            stream: true,
-            usage: { include: true },
-            temperature: TEMPERATURE,
-            max_tokens: MAX_TOKENS,
-            messages,
-            provider: { allow_fallbacks: true, zdr: true, data_collection: 'deny' },
-          }),
-          signal: AbortSignal.timeout(60000),
-        })
-        if (res.ok && res.body) return { res, model: candidate }
-        const raw = await res.json().catch(() => ({}))
-        last = raw?.error?.message || ('OpenRouter ' + res.status)
-        if (![408, 409, 425, 429, 500, 502, 503, 504].includes(res.status)) break
-      } catch (e) {
-        last = e instanceof Error ? e.message : String(e)
-      }
-      if (attempt === 0) await new Promise(r => setTimeout(r, 650))
+    const remaining = deadline - Date.now()
+    if (remaining < 1500) break
+    // Abort only while waiting for response HEADERS. Once streaming starts, do
+    // not interrupt a healthy model after an arbitrary 60-second total duration.
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), Math.min(45000, remaining))
+    try {
+      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer ' + OPENROUTER_KEY,
+          'content-type': 'application/json',
+          'X-Title': 'Uncensor AI',
+        },
+        body: JSON.stringify({
+          model: candidate,
+          stream: true,
+          usage: { include: true },
+          temperature: TEMPERATURE,
+          max_tokens: MAX_TOKENS,
+          messages,
+          provider: { allow_fallbacks: true, zdr: true, data_collection: 'deny' },
+        }),
+        signal: controller.signal,
+      })
+      clearTimeout(timer)
+      if (res.ok && res.body) return { res, model: candidate }
+      const raw = await res.json().catch(() => ({}))
+      last = raw?.error?.message || ('OpenRouter ' + res.status)
+    } catch (e) {
+      last = e instanceof Error ? e.message : String(e)
+    } finally {
+      clearTimeout(timer)
     }
   }
-  throw new Error(last)
+  throw new Error('No model began streaming in time. ' + last)
 }
 
 async function openRouterOnce(model: string, messages: any[]) {
