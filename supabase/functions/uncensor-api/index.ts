@@ -671,7 +671,10 @@ async function regenerateMessage(messageId:string,req:Request){
   const attachments=Array.isArray(user.attachments)?user.attachments:[]
   const attached=attachments.length?await attachmentParts(attachments):{forceMultimodal:false,parts:[]}
   const documentFocused=primaryDocumentAttachment(attachments)
-  const ctx=await relevantContext(query,allowKnowledgeWithAttachments(query,attachments,body?.use_knowledge!==false),String(conversation.id))
+  const includeKnowledge=allowKnowledgeWithAttachments(query,attachments,body?.use_knowledge!==false)
+  const ctx=documentFocused&&!includeKnowledge
+    ? {knowledge:[],memories:[],knowledge_retrieval_failed:false}
+    : await relevantContext(query,includeKnowledge,String(conversation.id))
   let recentQuery=db.from('private_ai_messages_read').select('id,role,content,created_at')
     .eq('conversation_id',conversation.id).neq('id',messageId)
   if(Number(conversation.summary_through_message_count||0)>0){
@@ -1107,7 +1110,10 @@ async function chat(req: Request) {
   await saveMessage(conversationId, 'user', text || 'Please analyze the attached item.', undefined, [], attachments)
 
   const retrievalQuery=text || attachmentHint || 'Analyze the attached document'
-  const ctx = await relevantContext(retrievalQuery, allowKnowledgeWithAttachments(text, attachments, body?.use_knowledge !== false), conversationId)
+  const includeKnowledge = allowKnowledgeWithAttachments(text, attachments, body?.use_knowledge !== false)
+  const ctx = documentFocused && !includeKnowledge
+    ? {knowledge:[],memories:[],knowledge_retrieval_failed:false}
+    : await relevantContext(retrievalQuery,includeKnowledge,conversationId)
   const recent = documentFocused ? [] : await recentMessages(conversationId, Number(conversation.summary_through_message_count || 0))
 
   const memoryText = (ctx.memories || []).slice(0, 12).map((m: any) =>
