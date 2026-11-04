@@ -32,6 +32,10 @@ const ctx={
 };
 vm.createContext(ctx);
 vm.runInContext(helpers,ctx);
+assert.equal(ctx.isSavedGenerationFailure({role:'assistant',content:'_Generation failed: no provider produced a usable answer._'}),true,'Saved provider errors must not count as successful replies');
+assert.equal(ctx.isSavedGenerationFailure({role:'assistant',content:'I analyzed the campaign evidence.'}),false,'Actual answers must still be accepted');
+assert.ok(app.includes("e.type==='status'"),'Frontend must surface upstream model progress');
+assert.ok(css.includes('.hero-orb.neural-mark{width:54px!important'),'Mobile hero decoration must never overflow the chat viewport');
 
 const a={key:'chat:A',conversationId:'A',draftId:'draft-1',controller:new AbortController()};
 const b={key:'chat:B',conversationId:'B',draftId:'draft-2',controller:new AbortController()};
