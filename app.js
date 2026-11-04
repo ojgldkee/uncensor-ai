@@ -266,7 +266,9 @@ async function refreshFinishedRun(run){
   state.activeConversation=d.conversation;
   state.messages=d.messages||[];
   renderMessages(state.followLatest);renderConversations();header();syncKnowledgeScopeUI();
-  return true;
+  // A successful GET only confirms that the conversation loaded. It must not
+  // be interpreted as a recovered answer unless a NEW assistant reply exists.
+  return state.messages.some(m=>m.role==='assistant'&&String(m.content||'').trim()&&m.id&&!run.existingAssistantIds.has(String(m.id)));
 }
 function when(v){if(!v)return'';const m=Math.floor((Date.now()-new Date(v).getTime())/60000);if(m<1)return'now';if(m<60)return m+'m';const h=Math.floor(m/60);if(h<24)return h+'h';const d=Math.floor(h/24);return d<7?d+'d':new Date(v).toLocaleDateString([], {month:'short',day:'numeric'});}
 
@@ -477,10 +479,10 @@ async function send(text){
   if(!ensurePrivateAuth())return;
   const sendingAttachments=state.pendingAttachments.map(a=>({...a}));
   const useResearch=state.webResearch&&sendingAttachments.length===0;
-  const safeMobile=/iPhone|iPad|iPod/i.test(navigator.userAgent);
   const run={
     key:activeThreadKey(),draftId:state.draftId,conversationId:state.activeId,
     controller:new AbortController(),research:useResearch,
+    existingAssistantIds:new Set(state.messages.filter(m=>m.role==='assistant'&&m.id).map(m=>String(m.id))),
     model:$('modelSelect').value,knowledge:state.knowledgeEnabled,style:state.style,mode:state.mode,
   };
   const user={role:'user',content:t||'Please analyze the attached item.',attachments:sendingAttachments};
@@ -498,12 +500,12 @@ async function send(text){
       body:JSON.stringify({
         conversation_id:run.conversationId,message:t||'Please analyze the attached item.',
         attachments:sendingAttachments,model:run.model,use_knowledge:run.knowledge,
-        style_prompt:run.style,response_mode:run.mode,stream:useResearch?false:!safeMobile
+        style_prompt:run.style,response_mode:run.mode,stream:!useResearch
       })
     });
     if(!r.ok){const d=await r.json().catch(()=>({}));throw Object.assign(new Error(d.error||'Request failed'),{data:d,status:r.status});}
 
-    if(useResearch||safeMobile){
+    if(useResearch){
       const d=await r.json();
       assistant.content=String(d.content||'');
       assistant.sources=Array.isArray(d.sources)?d.sources:[];
@@ -511,7 +513,15 @@ async function send(text){
       if(!assistant.content.trim())throw new Error('The model returned an empty response.');
       if(useResearch&&runIsVisible(run)&&d.external_search_query)toast('Privacy firewall query: '+d.external_search_query,5000);
     }else{
-      const reader=r.body.getReader(),dec=new TextDecoder();let buffer='';
+      if(!r.body)throw new Error('Streaming connection was not provided by the server.');
+      const reader=r.body.getReader(),dec=new TextDecoder();let buffer='',lastRender=0;
+      const paint=()=>{
+        if(!runIsVisible(run)||!assistant.content.trim())return;
+        if(!node||!node.isConnected)node=appendMessage(assistant,false);
+        const meta=splitAssistantMeta(assistant.content);
+        node.querySelector('.message-body').innerHTML=md(stripModelRefs(meta.body));
+        scrollToLatest();
+      };
       while(true){
         const part=await reader.read();
         if(part.done)break;
@@ -528,15 +538,15 @@ async function send(text){
           }
           if(e.type==='token'){
             assistant.content+=e.text||'';
-            if(runIsVisible(run)){
-              if(!node||!node.isConnected)node=appendMessage(assistant,false);
-              const meta=splitAssistantMeta(assistant.content);node.querySelector('.message-body').innerHTML=md(stripModelRefs(meta.body));
-              scrollToLatest();
+            if(runIsVisible(run)&&performance.now()-lastRender>120){
+              paint();
+              lastRender=performance.now();
             }
           }
           if(e.type==='error')throw new Error(e.error||'Model error');
         }
       }
+      paint();
       if(!assistant.content.trim())throw new Error('The model returned an empty response.');
     }
 
@@ -554,8 +564,16 @@ async function send(text){
         if(!refreshed&&assistant.content.trim()){assistant.content+='\n\n_[Stopped]_';state.messages.push(assistant);renderMessages();}
         toast('Generation stopped');
       }else if(!refreshed){
-        state.messages.push({role:'assistant',content:'Error: '+(e.message||'Request failed'),sources:[]});
-        renderMessages();toast(e.message||'Request failed',4500);
+        const problem=String(e?.message||'Request failed');
+        const suffix=/546|timeout|timed out|AbortError/i.test(problem)
+          ? ' The model took too long. Try a shorter request or another model.'
+          : '';
+        if(assistant.content.trim()){
+          state.messages.push({role:'assistant',content:assistant.content+'\n\n_[Response interrupted — '+problem+']_',sources:assistant.sources||[]});
+        }else{
+          state.messages.push({role:'assistant',content:'Generation failed: '+problem+suffix+'\n\nYour question and attachments are still saved. Retry from this conversation.',sources:[]});
+        }
+        renderMessages();recordClientError('chat-generation',e);toast(problem+suffix,5500);
       }else{
         toast('Answer recovered from the server.',3500);
       }
