@@ -16,7 +16,8 @@ const appIds=[...app.matchAll(/\$\(['"]([^'"]+)['"]\)/g)].map(x=>x[1]);
 const missing=[...new Set(appIds)].filter(id=>!htmlIds.includes(id)&&id!=='emptyAddKnowledge');
 expect(missing.length===0,'app.js references missing HTML IDs: '+missing.join(', '));
 
-expect(/knowledgeFile[^>]+accept=["'][^"']*\.pdf/i.test(html),'Knowledge file picker must accept PDF files');
+const knowledgePicker=html.match(/<input\\b[^>]*\\bid="knowledgeFile"[^>]*>/i)?.[0]||'';
+expect(Boolean(knowledgePicker)&&(!/\\baccept=/.test(knowledgePicker)||/\\baccept=["'][^"']*\\.pdf/i.test(knowledgePicker)),'Knowledge file picker must allow PDF files');
 expect(app.includes("application/pdf")&&app.includes("extractKnowledgePdf"),'PDF Knowledge extraction support is missing');
 expect(app.includes("/api/knowledge/ocr-page")&&api.includes("ocrPdfPage"),'PDF AI OCR fallback is missing');
 expect(app.includes("/api/knowledge/pdf")&&api.includes("knowledgePdfCreate"),'Persistent PDF upload handoff is missing');
@@ -32,6 +33,8 @@ expect(api.includes('retrievalDebug')&&html.includes('id="retrievalDebugModal"')
 expect(api.includes('knowledgeQuality')&&app.includes('knowledge-quality-chip'),'Knowledge quality scoring is missing');
 expect(api.includes("const retrievalQuery=text || attachmentHint"),'Attachment-only retrieval fallback is missing');
 expect(api.includes("TRANSCRIBE_MODEL"),'Current audio transcription model wiring is missing');
+expect(api.includes("assembleAttachedMessage")&&api.includes("documentFocused ? [] : await recentMessages"),'Current-attachment first document handling is missing');
+expect(api.includes("Attached text file is too long")&&api.includes("currentAttachmentRules"),'Silent truncation or document grounding guard is missing');
 expect(app.includes("kind==='audio'?16*1024*1024"),'Direct-chat audio memory guard is missing');
 expect(app.includes("serverHandoffStarted"),'Media upload handoff race guard is missing');
 expect(api.includes("cleanup=await db.from('private_ai_knowledge_sources').delete()"),'Knowledge creation cleanup guard is missing');
