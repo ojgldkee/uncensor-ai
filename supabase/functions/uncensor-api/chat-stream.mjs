@@ -18,7 +18,7 @@ export async function runChatGeneration({
     if(remaining<4000)break
     const attemptMs=Math.max(2000,Math.min(i===0?primaryWallMs:fallbackWallMs,remaining-2500))
     const began=now(),controller=new AbortController()
-    const timeout=setTimeout(()=>controller.abort('attempt_deadline'),attemptMs)
+    let timeout=setTimeout(()=>controller.abort('attempt_deadline'),attemptMs)
     const stop=()=>controller.abort('client_cancelled')
     if(signal)signal.addEventListener('abort',stop,{once:true})
     let reader=null,firstEventAt=0,firstTextAt=0,sawReasoning=false,usage=null,finishReason=null
@@ -67,6 +67,14 @@ export async function runChatGeneration({
         if(info.text){
           if(!firstTextAt){
             firstTextAt=now()
+            // Once an answer begins, use the overall request budget instead
+            // of terminating a healthy long response at the pre-answer cutoff.
+            const remainingOutput=Math.max(1000,deadline-now()-1800)
+            const oldRemaining=Math.max(0,attemptMs-(now()-began))
+            if(remainingOutput>oldRemaining){
+              clearTimeout(timeout)
+              timeout=setTimeout(()=>controller.abort('overall_stream_deadline'),remainingOutput)
+            }
             onEvent({type:'model',model,fallback_from:model!==preferred?preferred:null})
           }
           full+=info.text
