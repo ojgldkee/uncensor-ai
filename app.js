@@ -467,6 +467,26 @@ function renderMessages(forceBottom=true){
   const root=$('messages'),before=root.scrollTop;root.innerHTML='';
   $('emptyState').classList.toggle('hidden',state.messages.length>0);
   state.messages.forEach(m=>appendMessage(m,false));
+  // A failed or interrupted request may leave the latest user message saved
+  // without a matching assistant message. Expose that state after refresh.
+  const last=state.messages[state.messages.length-1];
+  if(last?.role==='user'&&!activeRun()){
+    const notice=document.createElement('div');
+    notice.className='unanswered-notice';
+    const info=document.createElement('span');
+    info.textContent='No AI answer was saved for this request.';
+    const retry=document.createElement('button');
+    retry.type='button';retry.textContent='Retry response';
+    retry.onclick=()=>{
+      if(activeRun())return;
+      const current=state.messages[state.messages.length-1];
+      if(current?.role!=='user')return;
+      state.pendingAttachments=Array.isArray(current.attachments)?current.attachments.map(a=>({...a})):[];
+      renderAttachmentTray();
+      void send(String(current.content||''));
+    };
+    notice.append(info,retry);root.append(notice);
+  }
   if(forceBottom){state.followLatest=true;scrollToLatest(true);}else{root.scrollTop=before;updateJumpLatest();}
   header();requestAnimationFrame(updateLayoutMetrics);
 }
