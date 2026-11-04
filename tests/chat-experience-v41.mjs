@@ -5,6 +5,8 @@ const app=fs.readFileSync('app.js','utf8');
 const html=fs.readFileSync('index.html','utf8');
 const css=fs.readFileSync('styles.css','utf8');
 const api=fs.readFileSync('supabase/functions/uncensor-api/index.ts','utf8');
+const runner=fs.readFileSync('supabase/functions/uncensor-api/chat-stream.mjs','utf8');
+const sse=fs.readFileSync('supabase/functions/uncensor-api/sse-bridge.mjs','utf8');
 
 assert.ok(html.includes('id="messageActionSheet"'),'Assistant message action sheet is missing');
 for(const id of ['messageCopyAction','messageSelectAction','messageRegenerateAction','messageShareAction','messageSourcesAction','messageImageAction','messageDeleteAction']){
@@ -53,10 +55,10 @@ assert.ok(/app\.js\?v=\d+(?:\.\d+)?/.test(html)&&/styles\.css\?v=41(?:\.\d+)?/.t
 assert.ok(app.includes("stream:!useResearch")&&!app.includes("safeMobile"),'iOS chat must use streaming for long responses');
 assert.ok(app.includes("existingAssistantIds")&&app.includes("!run.existingAssistantIds.has(String(m.id))"),'Conversation reload must verify a new saved assistant response before reporting recovery');
 assert.ok(app.includes("unanswered-notice")&&app.includes("Retry response")&&css.includes(".unanswered-notice"),'Interrupted chat must offer a retry after refresh');
-assert.ok(api.includes("const deadline=Date.now()+54000")&&!api.includes("signal: AbortSignal.timeout(60000)"),'Streaming startup must be bounded with provider fallback');
-assert.ok(api.includes("persistStreamingAnswer")&&api.includes("Generating — response may be incomplete")&&api.includes("partial answer saved"),'Long streams must checkpoint and preserve incomplete answers');
-assert.ok(api.includes("initialChunks")&&api.includes("fallback_from")&&api.includes("hasText"),'Stalled SSE providers must fall back before leaving an empty answer');
-assert.ok(api.includes("saveMessage(conversationId,'assistant',message,preferred,[])"),'Provider-start failures must be visible after refresh');
-assert.ok(app.includes("_Connecting to a model")&&app.includes("Generation interrupted; details are saved"),'Mobile UI must display progress and recover interruptions');
+assert.ok(api.includes('runChatGeneration')&&api.includes('EdgeRuntime')&&runner.includes('primaryWallMs=78000')&&runner.includes('sawReasoning'),'Streaming must run within a bounded worker using reasoning-aware provider fallback');
+assert.ok(api.includes("onCheckpoint")&&api.includes("Generating — response may be incomplete")&&api.includes("partial answer saved"),'Long streams must checkpoint and preserve incomplete answers');
+assert.ok(runner.includes("classifyOpenRouterEvent")&&runner.includes("empty_reasoning_budget")&&sse.includes("errorCode"),'Streaming must detect provider SSE errors, reasoning, and empty-token exhaustion');
+assert.ok(api.includes("await persist(errorText,preferred)")&&app.includes('isSavedGenerationFailure'),'Provider failures must be stored and distinguished from recovered answers');
+assert.ok(app.includes("_Connecting to a model")&&app.includes("e.type==='status'")&&app.includes("Retry response"),'Mobile UI must display progress and recover failed generations');
 
 console.log('v41 chat experience, message actions, hidden source UI and mobile layout tests passed');
