@@ -43,10 +43,11 @@ function sourceMeta(row) {
 function queryIntent(query) {
   const q = String(query || '').toLowerCase();
   return {
-    diagnosis: /(my|our).{0,30}(ad|campaign|cpm|ctr|cpc|cpa|roas|conversion|sales|funnel|account)|diagnos|troubleshoot|why (?:is|are|did|does)/.test(q),
-    current: /(current|currently|latest|today|now|this week|this month|this year|2026|2027)/.test(q),
+    diagnosis: /\b(my|our)\b.{0,30}\b(ad|campaign|cpm|ctr|cpc|cpa|roas|conversion|sales|funnel|account)\b|\bdiagnos|troubleshoot|why (?:is|are|did|does)\b/.test(q),
+    current: /\b(current|currently|latest|today|now|this week|this month|this year|2026|2027)\b/.test(q),
   };
 }
+
 function recencyAdjustment(row, intent) {
   if (!intent.current) return 0;
   const date = String(row?.metadata?.source_date || row?.source_created_at || '');
