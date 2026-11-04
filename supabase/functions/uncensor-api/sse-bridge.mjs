@@ -38,7 +38,7 @@ export function createSseParser(){
   }
 }
 export function classifyOpenRouterEvent(frame){
-  if(frame?.done)return {kind:'done',text:'',reasoning:false,usage:null,finishReason:'stop'}
+  if(frame?.done)return {kind:'done',text:'',reasoning:false,usage:null,finishReason:null}
   if(frame?.malformed)return {kind:'malformed',text:'',reasoning:false,usage:null,finishReason:null}
   const value=frame?.value||{}
   const choice=Array.isArray(value.choices)?value.choices[0]||{}:{}
