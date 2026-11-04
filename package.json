@@ -3,6 +3,6 @@
   "private": true,
   "version": "41.0.0",
   "scripts": {
-    "test": "node --check app.js && node --check supabase/functions/uncensor-api/knowledge-ranking.mjs && node tests/stability-smoke.mjs && node tests/knowledge-retrieval.mjs && node tests/ui-behavior.mjs && node tests/pdf-ocr.mjs && node tests/pdf-persistent.mjs && node tests/knowledge-intelligence.mjs && node tests/knowledge-ux.mjs && node tests/chat-experience-v41.mjs"
+    "test": "node --check app.js && node --check supabase/functions/uncensor-api/knowledge-ranking.mjs && node tests/sse-bridge.mjs && node tests/chat-stream.mjs && node tests/stability-smoke.mjs && node tests/knowledge-retrieval.mjs && node tests/ui-behavior.mjs && node tests/pdf-ocr.mjs && node tests/pdf-persistent.mjs && node tests/knowledge-intelligence.mjs && node tests/knowledge-ux.mjs && node tests/chat-experience-v41.mjs"
   }
 }
