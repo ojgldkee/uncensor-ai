@@ -49,4 +49,10 @@ assert.ok(html.includes('neural-mark')&&css.includes('.neural-mark'),'v41 neural
 assert.ok(app.includes("localStorage.setItem('uncensor.clientErrors'"),'Client diagnostics should persist across refreshes');
 assert.ok(/app\.js\?v=41\.\d+/.test(html)&&/styles\.css\?v=41(?:\.\d+)?/.test(html),'v41 cache URLs must be active');
 
+
+assert.ok(app.includes("stream:!useResearch")&&!app.includes("safeMobile"),'iOS chat must use streaming for long responses');
+assert.ok(app.includes("existingAssistantIds")&&app.includes("!run.existingAssistantIds.has(String(m.id))"),'Conversation reload must verify a new saved assistant response before reporting recovery');
+assert.ok(app.includes("unanswered-notice")&&app.includes("Retry response")&&css.includes(".unanswered-notice"),'Interrupted chat must offer a retry after refresh');
+assert.ok(api.includes("const deadline = Date.now() + 105000")&&!api.includes("signal: AbortSignal.timeout(60000)"),'Streaming model startup must be bounded without killing long answer bodies');
+
 console.log('v41 chat experience, message actions, hidden source UI and mobile layout tests passed');
