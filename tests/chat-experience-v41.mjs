@@ -54,5 +54,6 @@ assert.ok(app.includes("stream:!useResearch")&&!app.includes("safeMobile"),'iOS 
 assert.ok(app.includes("existingAssistantIds")&&app.includes("!run.existingAssistantIds.has(String(m.id))"),'Conversation reload must verify a new saved assistant response before reporting recovery');
 assert.ok(app.includes("unanswered-notice")&&app.includes("Retry response")&&css.includes(".unanswered-notice"),'Interrupted chat must offer a retry after refresh');
 assert.ok(api.includes("const deadline = Date.now() + 105000")&&!api.includes("signal: AbortSignal.timeout(60000)"),'Streaming model startup must be bounded without killing long answer bodies');
+assert.ok(api.includes("persistStreamingAnswer")&&api.includes("Generating — response may be incomplete")&&api.includes("partial answer saved"),'Long streams must checkpoint and preserve incomplete answers');
 
 console.log('v41 chat experience, message actions, hidden source UI and mobile layout tests passed');
