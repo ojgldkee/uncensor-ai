@@ -821,46 +821,84 @@ async function deleteLatestExchange(messageId:string){
 }
 
 async function openRouterStream(model: string, messages: any[]) {
-  const candidates = [model, ...FALLBACK_MODELS].filter((x, i, a) => x && a.indexOf(x) === i).slice(0, 3)
-  const deadline = Date.now() + 42000 // Bound provider connection time before Edge resource limits.
-  let last = 'No model provider succeeded'
-  for (const candidate of candidates) {
-    const remaining = deadline - Date.now()
-    if (remaining < 1500) break
-    // Abort only while waiting for response HEADERS. Once streaming starts, do
-    // not interrupt a healthy model after an arbitrary 60-second total duration.
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), Math.min(22000, remaining))
-    try {
-      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          authorization: 'Bearer ' + OPENROUTER_KEY,
-          'content-type': 'application/json',
-          'X-Title': 'Uncensor AI',
+  // OpenRouter providers may send SSE headers and reasoning tokens long before
+  // a user-visible answer. Watch for an actual content delta before accepting.
+  const candidates=[model,'z-ai/glm-5.3-flash',...FALLBACK_MODELS,'deepseek/deepseek-v4.1-flash-1017']
+    .filter((x,i,a)=>x&&a.indexOf(x)===i).slice(0,4)
+  let last='No provider returned answer text.'
+  const deadline=Date.now()+54000
+  for(let index=0;index<candidates.length;index++){
+    const candidate=candidates[index]
+    const remaining=deadline-Date.now()
+    if(remaining<3500)break
+    const windowMs=Math.min(16000,remaining)
+    const abortController=new AbortController()
+    const timer=setTimeout(()=>abortController.abort(),windowMs)
+    let reader:ReadableStreamDefaultReader<Uint8Array>|null=null
+    let accepted=false
+    try{
+      const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
+        method:'POST',
+        headers:{
+          authorization:'Bearer '+OPENROUTER_KEY,
+          'content-type':'application/json',
+          'X-Title':'Uncensor AI',
         },
-        body: JSON.stringify({
-          model: candidate,
-          stream: true,
-          usage: { include: true },
-          temperature: TEMPERATURE,
-          max_tokens: MAX_TOKENS,
-          messages,
-          provider: { allow_fallbacks: true, zdr: true, data_collection: 'deny' },
+        body:JSON.stringify({
+          model:candidate,stream:true,usage:{include:true},
+          temperature:TEMPERATURE,max_tokens:MAX_TOKENS,messages,
+          provider:{allow_fallbacks:true,zdr:true,data_collection:'deny'},
         }),
-        signal: controller.signal,
+        signal:abortController.signal,
       })
+      if(!res.ok||!res.body){
+        const raw=await res.json().catch(()=>({}))
+        last=raw?.error?.message||('OpenRouter '+res.status+' for '+candidate)
+        continue
+      }
+      reader=res.body.getReader()
+      const buffered:Uint8Array[]=[]
+      const probeDecoder=new TextDecoder()
+      let probeBuffer='',bytes=0,hasText=false
+      while(!abortController.signal.aborted&&bytes<131072){
+        const next=await reader.read()
+        if(next.done)break
+        if(!next.value?.length)continue
+        buffered.push(next.value)
+        bytes+=next.value.byteLength
+        probeBuffer+=probeDecoder.decode(next.value,{stream:true})
+        const lines=probeBuffer.split('\n')
+        probeBuffer=lines.pop()||''
+        for(const line of lines){
+          if(!line.trimStart().startsWith('data:'))continue
+          const payload=line.trimStart().slice(5).trim()
+          if(!payload||payload==='[DONE]')continue
+          let event:any
+          try{event=JSON.parse(payload)}catch{continue}
+          const delta=event?.choices?.[0]?.delta?.content
+          if(typeof delta==='string'&&delta.trim())hasText=true
+          if(Array.isArray(delta)&&delta.some((part:any)=>typeof part?.text==='string'&&part.text.trim()))hasText=true
+        }
+        if(hasText)break
+      }
+      if(hasText){
+        accepted=true
+        clearTimeout(timer)
+        return {reader,initialChunks:buffered,model:candidate,abortController,
+          fallback_from:candidate!==model?model:null}
+      }
+      last=candidate+' sent no visible answer before its deadline.'
+    }catch(error){
+      last=candidate+': '+(error instanceof Error?error.message:String(error))
+    }finally{
       clearTimeout(timer)
-      if (res.ok && res.body) return { res, model: candidate, abortController: controller }
-      const raw = await res.json().catch(() => ({}))
-      last = raw?.error?.message || ('OpenRouter ' + res.status)
-    } catch (e) {
-      last = e instanceof Error ? e.message : String(e)
-    } finally {
-      clearTimeout(timer)
+      if(!accepted){
+        abortController.abort()
+        if(reader)void reader.cancel().catch(()=>{})
+      }
     }
   }
-  throw new Error('No model began streaming in time. ' + last)
+  throw new Error('No model began answering. Tried other providers. '+last)
 }
 
 async function openRouterOnce(model: string, messages: any[]) {
@@ -1283,6 +1321,10 @@ async function chat(req: Request) {
   const encoder = new TextEncoder()
   const decoder = new TextDecoder()
   let full = '', buffer = '', usage: any = null, lengthLimited = false
+  const fallbackNote=upstream.fallback_from
+    ? '_The selected model did not answer promptly. Switched to '+upstream.model+' automatically._\n\n'
+    : ''
+  const pendingChunks:Uint8Array[]=upstream.initialChunks.slice()
   let answerId = '', lastCheckpointAt = Date.now(), lastCheckpointChars = 0
   async function persistStreamingAnswer(content:string){
     if(!content.trim())return
@@ -1306,11 +1348,16 @@ async function chat(req: Request) {
         sources: sourceMeta,
         memories_used: (ctx.memories || []).length,
       }) + '\n\n'))
-
-      const reader = upstream.res.body!.getReader()
+      if(fallbackNote){
+        full+=fallbackNote
+        controller.enqueue(encoder.encode('data: '+JSON.stringify({type:'token',text:fallbackNote})+'\n\n'))
+      }
+      const reader = upstream.reader
       try {
         while (true) {
-          const part = await reader.read()
+          const part=pendingChunks.length
+            ? {value:pendingChunks.shift()!,done:false}
+            : await reader.read()
           if (part.done) break
           buffer += decoder.decode(part.value, { stream: true })
           const lines = buffer.split('\n')
@@ -1357,13 +1404,14 @@ async function chat(req: Request) {
         controller.enqueue(encoder.encode('data: [DONE]\n\n'))
         controller.close()
       } catch (e) {
-        if(full.trim()){
-          try{await persistStreamingAnswer(full+'\n\n_[Response interrupted — partial answer saved. Say "continue" to finish.]_')}
-          catch(err){console.error('Could not save partial stream',err instanceof Error?err.message:String(err))}
-        }
-        const failure = upstream.abortController.signal.aborted
-          ? 'Generation reached the server reliability time limit. Any partial answer was saved; say "continue" to finish.'
+        const failure=upstream.abortController.signal.aborted
+          ? 'The model reached the reliability time limit. The partial answer is saved; say "continue" to finish.'
           : e instanceof Error ? e.message : 'Stream interrupted'
+        const savedText=full.trim()
+          ? full+'\n\n_[Response interrupted — partial answer saved. Say "continue" to finish.]_'
+          : '_The model did not produce a visible answer. Your prompt is preserved. Retry to switch providers._'
+        try{await persistStreamingAnswer(savedText)}
+        catch(err){console.error('Could not save interrupted stream',err instanceof Error?err.message:String(err))}
         controller.enqueue(encoder.encode('data: ' + JSON.stringify({ type: 'error', error: failure }) + '\n\n'))
         controller.close()
       } finally {
