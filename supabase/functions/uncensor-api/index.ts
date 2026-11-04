@@ -180,7 +180,7 @@ async function embed(text: string) {
       encoding_format: 'float',
       provider: { allow_fallbacks: true, zdr: true, data_collection: 'deny' },
     }),
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(18000),
   })
   const raw = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(raw?.error?.message || ('Embedding API ' + res.status))
@@ -525,7 +525,7 @@ async function relevantContext(query: string, includeKnowledge: boolean, convers
   const rankingQuery=commerceDiagnosisRequested(query)
     ? String(query).slice(0,1200)+' Meta ads CPM CTR CPC Shopify attribution landing page checkout'
     : query
-  const ranked=rankKnowledgeCandidatesDetailed(rankingQuery,candidates,{limit:requestLibraryWide?16:12,perSource:3})
+  const ranked=rankKnowledgeCandidatesDetailed(rankingQuery,candidates,{limit:requestLibraryWide?10:10,perSource:2})
   return {
     knowledge:ranked.selected,
     memories:memories.error?[]:(memories.data||[]),
@@ -574,7 +574,7 @@ function knowledgeEvidence(chunks:any[]){
     return '[K'+String(i+1)+'] '+String(k.title||'Knowledge')+
       (page?' (PDF page '+page+', section '+String(Number(k.chunk_index||0)+1)+')':' (section '+String(Number(k.chunk_index||0)+1)+')')+
       (labels.length?' ['+labels.join(' · ')+']':'')+
-      '\n'+cleanKnowledgeText(k.content).slice(0,4200)
+      '\n'+cleanKnowledgeText(k.content).slice(0,2200)
   }).join('\n\n')
 }
 function knowledgeSourceMeta(chunks:any[]){
@@ -649,18 +649,54 @@ function cleanStoredChatText(value:any){
     .replace(/\s*\[(?:K|W)\d+\]/gi,'')
     .trim()
 }
+function compactRecentMessages(rows:any[]) {
+  const unique:any[]=[]
+  for(const m of rows){
+    const current={role:m.role,content:cleanStoredChatText(m.content).slice(0,50000)}
+    const previous=unique[unique.length-1]
+    // Do not replay identical unanswered retries as additional prompts.
+    if(current.role==='user'&&previous?.role==='user'&&previous.content===current.content)continue
+    unique.push(current)
+  }
+  const out:any[]=[]
+  let total=0
+  // Preserve the entire latest question while bounding older conversation tokens.
+  for(let i=unique.length-1;i>=0;i--){
+    const item=unique[i]
+    if(out.length>=16)break
+    if(out.length&&total+item.content.length>36000)break
+    out.push(item)
+    total+=item.content.length
+  }
+  return out.reverse()
+}
 async function recentMessages(conversationId: string, summaryThrough: number) {
   if(summaryThrough>0){
     const q=await db.from('private_ai_messages_read').select('role,content,created_at')
       .eq('conversation_id',conversationId).order('created_at',{ascending:true})
       .range(summaryThrough,summaryThrough+47)
     if(q.error)throw q.error
-    return (q.data||[]).map((m:any)=>({role:m.role,content:cleanStoredChatText(m.content).slice(0,50000)}))
+    return compactRecentMessages(q.data||[])
   }
   const q=await db.from('private_ai_messages_read').select('role,content,created_at')
     .eq('conversation_id',conversationId).order('created_at',{ascending:false}).limit(48)
   if(q.error)throw q.error
-  return (q.data||[]).reverse().map((m:any)=>({role:m.role,content:cleanStoredChatText(m.content).slice(0,50000)}))
+  return compactRecentMessages((q.data||[]).reverse())
+}
+
+async function saveOrReuseUnansweredUserMessage(conversationId:string,content:string,attachments:any[]) {
+  const query=await db.from('private_ai_messages_read')
+    .select('id,role,content,attachments')
+    .eq('conversation_id',conversationId)
+    .order('created_at',{ascending:false}).limit(1)
+  if(query.error)throw query.error
+  const last=query.data?.[0]
+  // Reuse identical pending requests so a failed attempt never multiplies prompt history.
+  if(last?.role==='user'&&last.content===content&&
+     JSON.stringify(last.attachments||[])===JSON.stringify(attachments||[])) {
+    return {id:last.id,reused:true}
+  }
+  return await saveMessage(conversationId,'user',content,undefined,[],attachments)
 }
 
 async function saveMessage(conversationId: string, role: string, content: string, model?: string, sources?: unknown[], attachments?: unknown[]) {
@@ -786,7 +822,7 @@ async function deleteLatestExchange(messageId:string){
 
 async function openRouterStream(model: string, messages: any[]) {
   const candidates = [model, ...FALLBACK_MODELS].filter((x, i, a) => x && a.indexOf(x) === i).slice(0, 3)
-  const deadline = Date.now() + 105000 // Remain below the Edge Function's request idle limit.
+  const deadline = Date.now() + 42000 // Bound provider connection time before Edge resource limits.
   let last = 'No model provider succeeded'
   for (const candidate of candidates) {
     const remaining = deadline - Date.now()
@@ -794,7 +830,7 @@ async function openRouterStream(model: string, messages: any[]) {
     // Abort only while waiting for response HEADERS. Once streaming starts, do
     // not interrupt a healthy model after an arbitrary 60-second total duration.
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), Math.min(45000, remaining))
+    const timer = setTimeout(() => controller.abort(), Math.min(22000, remaining))
     try {
       const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
@@ -815,7 +851,7 @@ async function openRouterStream(model: string, messages: any[]) {
         signal: controller.signal,
       })
       clearTimeout(timer)
-      if (res.ok && res.body) return { res, model: candidate }
+      if (res.ok && res.body) return { res, model: candidate, abortController: controller }
       const raw = await res.json().catch(() => ({}))
       last = raw?.error?.message || ('OpenRouter ' + res.status)
     } catch (e) {
@@ -1149,8 +1185,17 @@ async function research(req: Request) {
   })
 }
 
+async function safeKnowledgeForChat(query:string,enabled:boolean,conversationId:string) {
+  try{return await relevantContext(query,enabled,conversationId)}
+  catch(error) {
+    console.error('Private knowledge retrieval failed gracefully:',error instanceof Error?error.message:String(error))
+    return {knowledge:[],memories:[],knowledge_retrieval_failed:true}
+  }
+}
+
 async function chat(req: Request) {
   if (!OPENROUTER_KEY) return json({ setup_required: true, error: 'OpenRouter key is not configured in Supabase yet.' }, 503)
+  const startedAt=Date.now()
   const rate = await db.rpc('private_ai_take_rate_limit', { minute_limit: 12, day_limit: 400 })
   if (rate.error) return json({ error: 'Rate limiter unavailable.' }, 503)
   if (rate.data !== true) return json({ error: 'Request limit reached. Try again shortly.', rate_limited: true }, 429)
@@ -1168,13 +1213,13 @@ async function chat(req: Request) {
   const attached = await attachmentParts(attachments)
   if (attachments.length && attached.parts.length !== attachments.length) throw new Error('One or more attachments could not be read. Please re-upload and try again.')
   const documentFocused = primaryDocumentAttachment(attachments)
-  await saveMessage(conversationId, 'user', text || 'Please analyze the attached item.', undefined, [], attachments)
+  await saveOrReuseUnansweredUserMessage(conversationId, text || 'Please analyze the attached item.', attachments)
 
   const retrievalQuery=[text,attachmentHint].filter(Boolean).join(' ') || 'Analyze the attached document'
   const includeKnowledge = allowKnowledgeWithAttachments(text, attachments, body?.use_knowledge !== false)
   const ctx = documentFocused && !includeKnowledge
     ? {knowledge:[],memories:[],knowledge_retrieval_failed:false}
-    : await relevantContext(retrievalQuery,includeKnowledge,conversationId)
+    : await safeKnowledgeForChat(retrievalQuery,includeKnowledge,conversationId)
   const recent = documentFocused ? [] : await recentMessages(conversationId, Number(conversation.summary_through_message_count || 0))
 
   const memoryText = (ctx.memories || []).slice(0, 12).map((m: any) =>
@@ -1233,6 +1278,8 @@ async function chat(req: Request) {
   }
 
   const upstream = await openRouterStream(preferred, requestMessages)
+  const remainingWallMs=Math.max(3000,75000-(Date.now()-startedAt))
+  const streamSafetyTimer=setTimeout(()=>upstream.abortController.abort(),remainingWallMs)
   const encoder = new TextEncoder()
   const decoder = new TextDecoder()
   let full = '', buffer = '', usage: any = null
@@ -1305,11 +1352,13 @@ async function chat(req: Request) {
         controller.close()
       } catch (e) {
         if(full.trim()){
-          try{await persistStreamingAnswer(full+'\n\n_[Response interrupted — partial answer saved]_')}
+          try{await persistStreamingAnswer(full+'\n\n_[Response interrupted — partial answer saved. Say "continue" to finish.]_')}
           catch(err){console.error('Could not save partial stream',err instanceof Error?err.message:String(err))}
         }
         controller.enqueue(encoder.encode('data: ' + JSON.stringify({ type: 'error', error: e instanceof Error ? e.message : 'Stream interrupted' }) + '\n\n'))
         controller.close()
+      } finally {
+        clearTimeout(streamSafetyTimer)
       }
     },
   })
