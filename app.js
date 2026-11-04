@@ -258,6 +258,10 @@ function bindRunConversation(run,id,title){
     rememberActiveChat();refreshSendingUI();renderConversations();syncKnowledgeScopeUI();
   }
 }
+function isSavedGenerationFailure(m){
+  const text=String(m?.content||'').trim();
+  return m?.role==='assistant' && /^(?:_Generation failed:|_No available model|_No model produced a usable answer|Generation failed:|_The model did not produce)/i.test(text);
+}
 async function refreshFinishedRun(run){
   if(!runIsVisible(run)||!run.conversationId)return false;
   const id=run.conversationId;
@@ -265,10 +269,13 @@ async function refreshFinishedRun(run){
   if(!runIsVisible(run))return false;
   state.activeConversation=d.conversation;
   state.messages=d.messages||[];
-  renderMessages(state.followLatest);renderConversations();header();syncKnowledgeScopeUI();
-  // A successful GET only confirms that the conversation loaded. It must not
-  // be interpreted as a recovered answer unless a NEW assistant reply exists.
-  return state.messages.some(m=>m.role==='assistant'&&String(m.content||'').trim()&&m.id&&!run.existingAssistantIds.has(String(m.id)));
+  const fresh=state.messages.filter(m=>m.role==='assistant'&&m.id&&!run.existingAssistantIds.has(String(m.id)));
+  run.savedGenerationFailure=fresh.find(isSavedGenerationFailure)||null;
+  run.savedPartial=fresh.some(m=>/Response interrupted|partial answer saved/i.test(String(m.content||''))&&!isSavedGenerationFailure(m));
+  // A saved error is not a completed or recovered AI answer.
+  const hasAnswer=fresh.some(m=>String(m.content||'').trim()&&!isSavedGenerationFailure(m));
+  renderMessages(true);renderConversations();header();syncKnowledgeScopeUI();
+  return hasAnswer;
 }
 function when(v){if(!v)return'';const m=Math.floor((Date.now()-new Date(v).getTime())/60000);if(m<1)return'now';if(m<60)return m+'m';const h=Math.floor(m/60);if(h<24)return h+'h';const d=Math.floor(h/24);return d<7?d+'d':new Date(v).toLocaleDateString([], {month:'short',day:'numeric'});}
 
@@ -470,17 +477,19 @@ function renderMessages(forceBottom=true){
   // A failed or interrupted request may leave the latest user message saved
   // without a matching assistant message. Expose that state after refresh.
   const last=state.messages[state.messages.length-1];
-  if(last?.role==='user'&&!activeRun()){
+  if((last?.role==='user'||isSavedGenerationFailure(last))&&!activeRun()){
     const notice=document.createElement('div');
     notice.className='unanswered-notice';
     const info=document.createElement('span');
-    info.textContent='No AI answer was saved for this request.';
+    info.textContent=isSavedGenerationFailure(last)
+      ?'The AI provider failed. No completed answer was generated.'
+      :'No AI answer was saved for this request.';
     const retry=document.createElement('button');
     retry.type='button';retry.textContent='Retry response';
     retry.onclick=()=>{
       if(activeRun())return;
-      const current=state.messages[state.messages.length-1];
-      if(current?.role!=='user')return;
+      const current=[...state.messages].reverse().find(m=>m.role==='user');
+      if(!current)return;
       state.pendingAttachments=Array.isArray(current.attachments)?current.attachments.map(a=>({...a})):[];
       renderAttachmentTray();
       void send(String(current.content||''));
@@ -525,7 +534,11 @@ async function send(text){
         style_prompt:run.style,response_mode:run.mode,stream:!useResearch
       })
     });
-    if(!r.ok){const d=await r.json().catch(()=>({}));throw Object.assign(new Error(d.error||'Request failed'),{data:d,status:r.status});}
+    if(!r.ok){
+      const d=await r.json().catch(()=>({}));
+      if(d.conversation_id)bindRunConversation(run,String(d.conversation_id),String(d.title||''));
+      throw Object.assign(new Error(d.error||'Request failed'),{data:d,status:r.status});
+    }
 
     if(useResearch){
       const d=await r.json();
@@ -558,6 +571,11 @@ async function send(text){
             bindRunConversation(run,String(e.conversation_id||''),String(e.title||''));
             if(Array.isArray(e.sources))assistant.sources=e.sources;
           }
+          if(e.type==='status'&&runIsVisible(run)){
+            const body=node?.querySelector('.message-body');
+            if(body&&!assistant.content.trim())body.textContent=String(e.text||'Working on your answer…');
+          }
+          if(e.type==='model')assistant.model=String(e.model||'');
           if(e.type==='token'){
             assistant.content+=e.text||'';
             if(runIsVisible(run)&&performance.now()-lastRender>350){
@@ -585,6 +603,9 @@ async function send(text){
       if(stopped){
         if(!refreshed&&assistant.content.trim()){assistant.content+='\n\n_[Stopped]_';state.messages.push(assistant);renderMessages();}
         toast('Generation stopped');
+      }else if(run.savedGenerationFailure){
+        recordClientError('model-provider-failure',e);
+        toast('The AI provider failed. Details and Retry response are in this chat.',5000);
       }else if(!refreshed){
         const problem=String(e?.message||'Request failed');
         const suffix=/546|timeout|timed out|AbortError/i.test(problem)
@@ -598,7 +619,7 @@ async function send(text){
         renderMessages();recordClientError('chat-generation',e);toast(problem+suffix,5500);
       }else{
         const latest=String(state.messages[state.messages.length-1]?.content||'');
-        const failed=/no available model|request preserved|response interrupted|could not complete/i.test(latest);
+        const failed=Boolean(run.savedGenerationFailure)||/no available model|request preserved|response interrupted|could not complete/i.test(latest);
         toast(failed?'Generation interrupted; details are saved in this chat.':'Answer recovered from the server.',4500);
       }
     }else if(e?.name!=='AbortError'&&!run.controller.signal.aborted){
