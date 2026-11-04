@@ -11,6 +11,7 @@ export async function runChatGeneration({
   const models=[preferred,...fallbacks].filter((m,i,a)=>m&&a.indexOf(m)===i).slice(0,4)
   const deadline=startedAt+totalWallMs
   const attempts=[]
+  const recordAttempt=(record)=>{attempts.push(record);onAttempt(record)}
   let lastError='No model produced a visible answer.'
   for(let i=0;i<models.length;i++){
     const model=models[i],remaining=deadline-now()
@@ -43,7 +44,7 @@ export async function runChatGeneration({
         const raw=await res.json().catch(()=>({}))
         upstreamError=String(raw?.error?.message||('HTTP '+res.status)).slice(0,600)
         lastError=model+' returned '+upstreamError
-        onAttempt({model,elapsed_ms:now()-began,http_status:res.status,reason:'http_error',error:upstreamError})
+        recordAttempt({model,elapsed_ms:now()-began,http_status:res.status,reason:'http_error',error:upstreamError})
         continue
       }
       reader=res.body.getReader()
@@ -74,7 +75,7 @@ export async function runChatGeneration({
             (full.length>=250&&now()-lastCheckpointAt>=10000)){
             sinceCheckpoint=full.length;lastCheckpointAt=now()
             try{await onCheckpoint(full,model,false)}catch(e){
-              onAttempt({model,reason:'checkpoint_failed',error:String(e).slice(0,300)})
+              recordAttempt({model,reason:'checkpoint_failed',error:String(e).slice(0,300)})
             }
           }
         }
@@ -103,7 +104,7 @@ export async function runChatGeneration({
       }
       if(full.trim()){
         const interrupted=Boolean(upstreamError)||(finishReason==='error')||(!gotDone&&!finishReason)
-        onAttempt({...detail,reason:interrupted?'partial_stream':'completed',
+        recordAttempt({...detail,reason:interrupted?'partial_stream':'completed',
           error:upstreamError?upstreamError.slice(0,400):null})
         return {ok:true,partial:interrupted,model,full,usage,finishReason,
           attempts,error:upstreamError||null}
@@ -114,13 +115,13 @@ export async function runChatGeneration({
         reason==='empty_reasoning_budget'
         ?'Model used its output budget without producing visible text'
         :'Stream ended without visible answer text')
-      onAttempt({...detail,reason,error:error.slice(0,400)})
+      recordAttempt({...detail,reason,error:error.slice(0,400)})
       lastError=model+': '+error
     }catch(e){
       const aborted=controller.signal.aborted
       const reason=signal?.aborted?'client_cancelled':aborted?'attempt_timeout':'provider_exception'
       const error=(e instanceof Error?e.message:String(e)).slice(0,450)
-      onAttempt({model,elapsed_ms:now()-began,reason,error,
+      recordAttempt({model,elapsed_ms:now()-began,reason,error,
         first_event_ms:firstEventAt?firstEventAt-began:null,
         saw_reasoning:sawReasoning,visible_chars:full.length})
       if(full.trim())return {ok:true,partial:true,model,full,usage,
@@ -131,7 +132,7 @@ export async function runChatGeneration({
       clearTimeout(timeout)
       if(signal)signal.removeEventListener('abort',stop)
       controller.abort('finished')
-      if(reader)try{await reader.cancel()}catch{}
+      if(reader)void reader.cancel().catch(()=>{})
     }
   }
   return {ok:false,full:'',attempts,error:lastError}
