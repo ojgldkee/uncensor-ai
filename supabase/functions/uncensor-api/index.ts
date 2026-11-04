@@ -1,6 +1,7 @@
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import { rankKnowledgeCandidatesDetailed } from './knowledge-ranking.mjs'
+import { runChatGeneration } from './chat-stream.mjs'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || ''
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
@@ -820,87 +821,6 @@ async function deleteLatestExchange(messageId:string){
   return json({ok:true,conversation_id:conversation.id,deleted:[user.id,target.id]})
 }
 
-async function openRouterStream(model: string, messages: any[]) {
-  // OpenRouter providers may send SSE headers and reasoning tokens long before
-  // a user-visible answer. Watch for an actual content delta before accepting.
-  const candidates=[model,'z-ai/glm-5.3-flash',...FALLBACK_MODELS,'deepseek/deepseek-v4.1-flash-1017']
-    .filter((x,i,a)=>x&&a.indexOf(x)===i).slice(0,4)
-  let last='No provider returned answer text.'
-  const deadline=Date.now()+54000
-  for(let index=0;index<candidates.length;index++){
-    const candidate=candidates[index]
-    const remaining=deadline-Date.now()
-    if(remaining<3500)break
-    const windowMs=Math.min(16000,remaining)
-    const abortController=new AbortController()
-    const timer=setTimeout(()=>abortController.abort(),windowMs)
-    let reader:ReadableStreamDefaultReader<Uint8Array>|null=null
-    let accepted=false
-    try{
-      const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{
-        method:'POST',
-        headers:{
-          authorization:'Bearer '+OPENROUTER_KEY,
-          'content-type':'application/json',
-          'X-Title':'Uncensor AI',
-        },
-        body:JSON.stringify({
-          model:candidate,stream:true,usage:{include:true},
-          temperature:TEMPERATURE,max_tokens:MAX_TOKENS,messages,
-          provider:{allow_fallbacks:true,zdr:true,data_collection:'deny'},
-        }),
-        signal:abortController.signal,
-      })
-      if(!res.ok||!res.body){
-        const raw=await res.json().catch(()=>({}))
-        last=raw?.error?.message||('OpenRouter '+res.status+' for '+candidate)
-        continue
-      }
-      reader=res.body.getReader()
-      const buffered:Uint8Array[]=[]
-      const probeDecoder=new TextDecoder()
-      let probeBuffer='',bytes=0,hasText=false
-      while(!abortController.signal.aborted&&bytes<131072){
-        const next=await reader.read()
-        if(next.done)break
-        if(!next.value?.length)continue
-        buffered.push(next.value)
-        bytes+=next.value.byteLength
-        probeBuffer+=probeDecoder.decode(next.value,{stream:true})
-        const lines=probeBuffer.split('\n')
-        probeBuffer=lines.pop()||''
-        for(const line of lines){
-          if(!line.trimStart().startsWith('data:'))continue
-          const payload=line.trimStart().slice(5).trim()
-          if(!payload||payload==='[DONE]')continue
-          let event:any
-          try{event=JSON.parse(payload)}catch{continue}
-          const delta=event?.choices?.[0]?.delta?.content
-          if(typeof delta==='string'&&delta.trim())hasText=true
-          if(Array.isArray(delta)&&delta.some((part:any)=>typeof part?.text==='string'&&part.text.trim()))hasText=true
-        }
-        if(hasText)break
-      }
-      if(hasText){
-        accepted=true
-        clearTimeout(timer)
-        return {reader,initialChunks:buffered,model:candidate,abortController,
-          fallback_from:candidate!==model?model:null}
-      }
-      last=candidate+' sent no visible answer before its deadline.'
-    }catch(error){
-      last=candidate+': '+(error instanceof Error?error.message:String(error))
-    }finally{
-      clearTimeout(timer)
-      if(!accepted){
-        abortController.abort()
-        if(reader)void reader.cancel().catch(()=>{})
-      }
-    }
-  }
-  throw new Error('No model began answering. Tried other providers. '+last)
-}
-
 async function openRouterOnce(model: string, messages: any[]) {
   const candidates = [model, ...FALLBACK_MODELS].filter((x, i, a) => x && a.indexOf(x) === i)
   let last = 'No model provider succeeded'
@@ -1315,121 +1235,119 @@ async function chat(req: Request) {
     })
   }
 
-  let upstream:Awaited<ReturnType<typeof openRouterStream>>
-  try {
-    upstream=await openRouterStream(preferred,requestMessages)
-  } catch(error) {
-    const issue=error instanceof Error?error.message:String(error)
-    const message='_No available model started producing an answer. The request was preserved and automatic fallback was attempted._\n\nError: '+issue
-    await saveMessage(conversationId,'assistant',message,preferred,[])
-    return json({error:'No available model produced an answer. Tried automatic fallbacks; see the saved message for details.',conversation_id:conversationId,retryable:true},503)
-  }
-  const remainingWallMs=Math.max(3000,75000-(Date.now()-startedAt))
-  const streamSafetyTimer=setTimeout(()=>upstream.abortController.abort(),remainingWallMs)
-  const encoder = new TextEncoder()
-  const decoder = new TextDecoder()
-  let full = '', buffer = '', usage: any = null, lengthLimited = false
-  const fallbackNote=upstream.fallback_from
-    ? '_The selected model did not answer promptly. Switched to '+upstream.model+' automatically._\n\n'
-    : ''
-  const pendingChunks:Uint8Array[]=upstream.initialChunks.slice()
-  let answerId = '', lastCheckpointAt = Date.now(), lastCheckpointChars = 0
-  async function persistStreamingAnswer(content:string){
-    if(!content.trim())return
-    if(answerId){
-      const updated=await db.from('private_ai_messages').update({content}).eq('id',answerId).select('id').single()
-      if(updated.error)throw updated.error
-    }else{
-      const saved=await saveMessage(conversationId,'assistant',content,upstream.model,sourceMeta)
-      answerId=String(saved.id)
-    }
-    lastCheckpointAt=Date.now()
-    lastCheckpointChars=full.length
-  }
-  const stream = new ReadableStream({
-    async start(controller) {
-      controller.enqueue(encoder.encode('data: ' + JSON.stringify({
-        type: 'meta',
-        conversation_id: conversationId,
-        title: conversation.title,
-        model: upstream.model,
-        sources: sourceMeta,
-        memories_used: (ctx.memories || []).length,
-      }) + '\n\n'))
-      if(fallbackNote){
-        full+=fallbackNote
-        controller.enqueue(encoder.encode('data: '+JSON.stringify({type:'token',text:fallbackNote})+'\n\n'))
+  // Return an SSE connection immediately; do not wait for a model to finish
+  // reasoning before the browser receives a conversation ID and progress.
+  const encoder=new TextEncoder()
+  const downstreamAbort=new AbortController()
+  const stream=new ReadableStream<Uint8Array>({
+    start(controller){
+      let closed=false
+      const push=(event:any)=>{
+        if(closed)return
+        try{controller.enqueue(encoder.encode('data: '+JSON.stringify(event)+'\n\n'))}
+        catch(error){console.error('stream delivery error',String(error).slice(0,200));downstreamAbort.abort('client disconnected')}
       }
-      const reader = upstream.reader
-      try {
-        while (true) {
-          const part=pendingChunks.length
-            ? {value:pendingChunks.shift()!,done:false}
-            : await reader.read()
-          if (part.done) break
-          buffer += decoder.decode(part.value, { stream: true })
-          const lines = buffer.split('\n')
-          buffer = lines.pop() || ''
-          for (const line of lines) {
-            if (!line.startsWith('data:')) continue
-            const payload = line.slice(5).trim()
-            if (!payload || payload === '[DONE]') continue
-            let event: any
-            try { event = JSON.parse(payload) } catch { continue }
-            if (event.usage) usage = event.usage
-            if (event?.choices?.[0]?.finish_reason === 'length') lengthLimited = true
-            const token = event?.choices?.[0]?.delta?.content
-            if (typeof token === 'string' && token) {
-              full += token
-              controller.enqueue(encoder.encode('data: ' + JSON.stringify({ type: 'token', text: token }) + '\n\n'))
-              // Checkpoint large answers while streaming so a gateway disconnect,
-              // mobile refresh or worker timeout does not erase all progress.
-              if(full.length-lastCheckpointChars>=2000||(full.length>=250&&Date.now()-lastCheckpointAt>=12000)){
-                try{await persistStreamingAnswer(full+'\n\n_[Generating — response may be incomplete]_')}
-                catch(err){console.error('Streaming checkpoint failed',err instanceof Error?err.message:String(err))}
-              }
-            }
-          }
+      const finish=()=>{
+        if(closed)return
+        closed=true
+        try{controller.enqueue(encoder.encode('data: [DONE]\n\n'));controller.close()}catch{}
+      }
+      push({type:'meta',conversation_id:conversationId,title:conversation.title,
+        model:preferred,sources:sourceMeta,memories_used:(ctx.memories||[]).length})
+      push({type:'status',text:'Preparing your response…'})
+      let answerId='',visibleText='',currentModel=preferred
+      const persist=async(content:string,model:string)=>{
+        if(!content.trim())return
+        if(answerId){
+          const q=await db.from('private_ai_messages')
+            .update({content,model}).eq('id',answerId).select('id').single()
+          if(q.error)throw q.error
+        }else{
+          const q=await saveMessage(conversationId,'assistant',content,model,sourceMeta)
+          answerId=String(q.id)
         }
-
-        if (lengthLimited && full.trim()) {
-          const note='\n\n_[This answer reached the model output limit. Say "continue" for the rest.]_'
-          full+=note
-          controller.enqueue(encoder.encode('data: '+JSON.stringify({type:'token',text:note})+'\n\n'))
-        }
-        if (full.trim()) await persistStreamingAnswer(full)
-        if (usage) {
-          await db.from('private_ai_usage').insert({
-            conversation_id: conversationId,
-            model: upstream.model,
-            operation: 'chat',
-            prompt_tokens: Number(usage.prompt_tokens || 0),
-            completion_tokens: Number(usage.completion_tokens || 0),
-            total_tokens: Number(usage.total_tokens || 0),
-            cost_usd: Number(usage.cost || 0),
+      }
+      const job=(async()=>{
+        try{
+          const result=await runChatGeneration({
+            preferred,
+            fallbacks:[...FALLBACK_MODELS,DEFAULT_MODEL],
+            messages:requestMessages,
+            apiKey:OPENROUTER_KEY,maxTokens:MAX_TOKENS,
+            temperature:TEMPERATURE,startedAt,signal:downstreamAbort.signal,
+            // Free-tier workers have a hard wall-clock ceiling. Leave time
+            // for database persistence and an orderly response closure.
+            totalWallMs:118000,primaryWallMs:78000,fallbackWallMs:35000,
+            onEvent:(event:any)=>{
+              if(event.type==='token')visibleText+=String(event.text||'')
+              if(event.type==='model')currentModel=String(event.model||preferred)
+              push(event)
+            },
+            onAttempt:(entry:any)=>{
+              // Never log private messages, credentials, retrieved snippets,
+              // or response text. Logs contain only timings and error types.
+              const safe={model:entry.model,reason:entry.reason,
+                elapsed_ms:entry.elapsed_ms,http_status:entry.http_status,
+                first_event_ms:entry.first_event_ms,first_text_ms:entry.first_text_ms,
+                saw_reasoning:entry.saw_reasoning,
+                visible_chars:entry.visible_chars,finish_reason:entry.finish_reason,
+                error:String(entry.error||'').slice(0,280)}
+              console.info('uncensor_provider_attempt '+JSON.stringify(safe))
+            },
+            onCheckpoint:async(partial:string,model:string)=>{
+              await persist(partial+'\n\n_[Generating — response may be incomplete]_',model)
+            },
           })
-        }
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
-        controller.close()
-      } catch (e) {
-        const failure=upstream.abortController.signal.aborted
-          ? 'The model reached the reliability time limit. The partial answer is saved; say "continue" to finish.'
-          : e instanceof Error ? e.message : 'Stream interrupted'
-        const savedText=full.trim()
-          ? full+'\n\n_[Response interrupted — partial answer saved. Say "continue" to finish.]_'
-          : '_The model did not produce a visible answer. Your prompt is preserved. Retry to switch providers._'
-        try{await persistStreamingAnswer(savedText)}
-        catch(err){console.error('Could not save interrupted stream',err instanceof Error?err.message:String(err))}
-        controller.enqueue(encoder.encode('data: ' + JSON.stringify({ type: 'error', error: failure }) + '\n\n'))
-        controller.close()
-      } finally {
-        clearTimeout(streamSafetyTimer)
+          if(result.ok){
+            const suffix=result.partial
+              ?'\n\n_[Response interrupted — the partial answer was saved. Send "continue" for the rest.]_'
+              :result.finishReason==='length'
+                ?'\n\n_[Answer reached the output-token limit. Send "continue" for the rest.]_'
+                :''
+            if(suffix)push({type:'token',text:suffix})
+            const finalText=result.full+suffix
+            await persist(finalText,result.model)
+            if(result.usage){
+              const u=result.usage
+              const saved=await db.from('private_ai_usage').insert({
+                conversation_id:conversationId,model:result.model,operation:'chat',
+                prompt_tokens:Number(u.prompt_tokens||0),
+                completion_tokens:Number(u.completion_tokens||0),
+                total_tokens:Number(u.total_tokens||0),cost_usd:Number(u.cost||0),
+              })
+              if(saved.error)console.warn('usage log failed',saved.error.message)
+            }
+            push({type:'completed',model:result.model,partial:Boolean(result.partial),
+              finish_reason:result.finishReason||null})
+          }else{
+            const detail=String(result.error||'No provider delivered an answer').slice(0,260)
+            const errorText='_Generation failed: no provider produced a usable answer._\n\n'+
+              'Model attempts were recorded in server diagnostics. '+detail
+            await persist(errorText,preferred)
+            push({type:'error',error:'The AI providers did not deliver an answer. Your request is saved. Try again or select a different model.',retryable:true})
+          }
+        }catch(error){
+          const detail=String(error instanceof Error?error.message:error).slice(0,280)
+          console.error('uncensor_generation_exception '+detail)
+          const text=visibleText.trim()
+            ?visibleText+'\n\n_[Response interrupted — partial answer saved. Say "continue" to finish.]_'
+            :'_Generation failed: a server error interrupted the model request._'
+          try{await persist(text,currentModel)}catch(saveError){
+            console.error('uncensor_save_error '+String(saveError).slice(0,240))
+          }
+          push({type:'error',error:'Generation was interrupted. Any partial response was saved in the conversation.',retryable:true})
+        }finally{finish()}
+      })()
+      // Keep Edge workers alive while the response stream remains active.
+      try{(globalThis as any).EdgeRuntime?.waitUntil?.(job)}catch(error){
+        console.warn('waitUntil unavailable',String(error).slice(0,180))
       }
     },
+    cancel(){downstreamAbort.abort('browser_cancelled')},
   })
 
   return new Response(stream, {
-    headers: { ...CORS, 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' },
+    headers: { ...CORS, 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering':'no' },
   })
 }
 
