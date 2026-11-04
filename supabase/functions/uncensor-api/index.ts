@@ -466,8 +466,10 @@ async function relevantContext(query: string, includeKnowledge: boolean, convers
     if(requestLibraryWide){
       const probes=[
         String(query||''),
-        'Meta Facebook ads: high CPM auction competition audience overlap targeting creative quality placements budget learning phase bidding and delivery diagnostics',
-        'Meta Shopify ecommerce: CTR all vs link CTR cost per link click landing page views add to cart initiated checkout pixel attribution UTM sessions test traffic and conversion rates',
+        ...(commerceDiagnosisRequested(query)?[
+          'Meta Facebook ads: high CPM auction competition audience overlap targeting creative quality placements budget learning phase bidding and delivery diagnostics',
+          'Meta Shopify ecommerce: CTR all vs link CTR cost per link click landing page views add to cart initiated checkout pixel attribution UTM sessions test traffic and conversion rates',
+        ]:[]),
       ]
       const fetched=await Promise.all(probes.map(async (probe,i)=>{
         try{
@@ -520,7 +522,7 @@ async function relevantContext(query: string, includeKnowledge: boolean, convers
     }
   }
 
-  const rankingQuery=requestLibraryWide
+  const rankingQuery=commerceDiagnosisRequested(query)
     ? String(query).slice(0,1200)+' Meta ads CPM CTR CPC Shopify attribution landing page checkout'
     : query
   const ranked=rankKnowledgeCandidatesDetailed(rankingQuery,candidates,{limit:requestLibraryWide?16:12,perSource:3})
