@@ -1315,7 +1315,15 @@ async function chat(req: Request) {
     })
   }
 
-  const upstream = await openRouterStream(preferred, requestMessages)
+  let upstream:Awaited<ReturnType<typeof openRouterStream>>
+  try {
+    upstream=await openRouterStream(preferred,requestMessages)
+  } catch(error) {
+    const issue=error instanceof Error?error.message:String(error)
+    const message='_No available model started producing an answer. The request was preserved and automatic fallback was attempted._\n\nError: '+issue
+    await saveMessage(conversationId,'assistant',message,preferred,[])
+    return json({error:'No available model produced an answer. Tried automatic fallbacks; see the saved message for details.',conversation_id:conversationId,retryable:true},503)
+  }
   const remainingWallMs=Math.max(3000,75000-(Date.now()-startedAt))
   const streamSafetyTimer=setTimeout(()=>upstream.abortController.abort(),remainingWallMs)
   const encoder = new TextEncoder()
