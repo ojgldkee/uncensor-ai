@@ -1282,7 +1282,7 @@ async function chat(req: Request) {
   const streamSafetyTimer=setTimeout(()=>upstream.abortController.abort(),remainingWallMs)
   const encoder = new TextEncoder()
   const decoder = new TextDecoder()
-  let full = '', buffer = '', usage: any = null
+  let full = '', buffer = '', usage: any = null, lengthLimited = false
   let answerId = '', lastCheckpointAt = Date.now(), lastCheckpointChars = 0
   async function persistStreamingAnswer(content:string){
     if(!content.trim())return
@@ -1322,6 +1322,7 @@ async function chat(req: Request) {
             let event: any
             try { event = JSON.parse(payload) } catch { continue }
             if (event.usage) usage = event.usage
+            if (event?.choices?.[0]?.finish_reason === 'length') lengthLimited = true
             const token = event?.choices?.[0]?.delta?.content
             if (typeof token === 'string' && token) {
               full += token
@@ -1336,6 +1337,11 @@ async function chat(req: Request) {
           }
         }
 
+        if (lengthLimited && full.trim()) {
+          const note='\n\n_[This answer reached the model output limit. Say "continue" for the rest.]_'
+          full+=note
+          controller.enqueue(encoder.encode('data: '+JSON.stringify({type:'token',text:note})+'\n\n'))
+        }
         if (full.trim()) await persistStreamingAnswer(full)
         if (usage) {
           await db.from('private_ai_usage').insert({
@@ -1355,7 +1361,10 @@ async function chat(req: Request) {
           try{await persistStreamingAnswer(full+'\n\n_[Response interrupted — partial answer saved. Say "continue" to finish.]_')}
           catch(err){console.error('Could not save partial stream',err instanceof Error?err.message:String(err))}
         }
-        controller.enqueue(encoder.encode('data: ' + JSON.stringify({ type: 'error', error: e instanceof Error ? e.message : 'Stream interrupted' }) + '\n\n'))
+        const failure = upstream.abortController.signal.aborted
+          ? 'Generation reached the server reliability time limit. Any partial answer was saved; say "continue" to finish.'
+          : e instanceof Error ? e.message : 'Stream interrupted'
+        controller.enqueue(encoder.encode('data: ' + JSON.stringify({ type: 'error', error: failure }) + '\n\n'))
         controller.close()
       } finally {
         clearTimeout(streamSafetyTimer)
