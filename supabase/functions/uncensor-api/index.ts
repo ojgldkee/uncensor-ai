@@ -1180,7 +1180,20 @@ async function chat(req: Request) {
   const upstream = await openRouterStream(preferred, requestMessages)
   const encoder = new TextEncoder()
   const decoder = new TextDecoder()
-  let full = '', buffer = '', usage: any = null, assistantSaved = false
+  let full = '', buffer = '', usage: any = null
+  let answerId = '', lastCheckpointAt = Date.now(), lastCheckpointChars = 0
+  async function persistStreamingAnswer(content:string){
+    if(!content.trim())return
+    if(answerId){
+      const updated=await db.from('private_ai_messages').update({content}).eq('id',answerId).select('id').single()
+      if(updated.error)throw updated.error
+    }else{
+      const saved=await saveMessage(conversationId,'assistant',content,upstream.model,sourceMeta)
+      answerId=String(saved.id)
+    }
+    lastCheckpointAt=Date.now()
+    lastCheckpointChars=full.length
+  }
   const stream = new ReadableStream({
     async start(controller) {
       controller.enqueue(encoder.encode('data: ' + JSON.stringify({
@@ -1211,14 +1224,17 @@ async function chat(req: Request) {
             if (typeof token === 'string' && token) {
               full += token
               controller.enqueue(encoder.encode('data: ' + JSON.stringify({ type: 'token', text: token }) + '\n\n'))
+              // Checkpoint large answers while streaming so a gateway disconnect,
+              // mobile refresh or worker timeout does not erase all progress.
+              if(full.length-lastCheckpointChars>=2000||(full.length>=250&&Date.now()-lastCheckpointAt>=12000)){
+                try{await persistStreamingAnswer(full+'\n\n_[Generating — response may be incomplete]_')}
+                catch(err){console.error('Streaming checkpoint failed',err instanceof Error?err.message:String(err))}
+              }
             }
           }
         }
 
-        if (full.trim()) {
-          await saveMessage(conversationId, 'assistant', full, upstream.model, sourceMeta)
-          assistantSaved = true
-        }
+        if (full.trim()) await persistStreamingAnswer(full)
         if (usage) {
           await db.from('private_ai_usage').insert({
             conversation_id: conversationId,
@@ -1233,11 +1249,9 @@ async function chat(req: Request) {
         controller.enqueue(encoder.encode('data: [DONE]\n\n'))
         controller.close()
       } catch (e) {
-        if (full.trim() && !assistantSaved) {
-          try {
-            await saveMessage(conversationId, 'assistant', full + '\n\n[Response interrupted]', upstream.model, sourceMeta)
-            assistantSaved = true
-          } catch {}
+        if(full.trim()){
+          try{await persistStreamingAnswer(full+'\n\n_[Response interrupted — partial answer saved]_')}
+          catch(err){console.error('Could not save partial stream',err instanceof Error?err.message:String(err))}
         }
         controller.enqueue(encoder.encode('data: ' + JSON.stringify({ type: 'error', error: e instanceof Error ? e.message : 'Stream interrupted' }) + '\n\n'))
         controller.close()
