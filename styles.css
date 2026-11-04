@@ -396,3 +396,9 @@
  .composer-wrap{padding-bottom:max(10px,env(safe-area-inset-bottom))}
  .composer-meta{display:flex;align-items:center;justify-content:center}
 }
+
+/* Recoverable no-answer state for interrupted or timed-out chat requests. */
+.unanswered-notice{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 24px;padding:12px 14px;border:1px solid #344459;border-radius:12px;background:#101925;color:#c3cfe0;font-size:13px}
+.unanswered-notice button{flex-shrink:0;padding:8px 11px;border:1px solid #6687ac;border-radius:8px;background:#172740;color:#e5f1ff;font-weight:700;cursor:pointer}
+.unanswered-notice button:hover{background:#233d5b}
+@media(max-width:560px){.unanswered-notice{flex-direction:column;align-items:flex-start}.unanswered-notice button{width:100%;min-height:38px}}
