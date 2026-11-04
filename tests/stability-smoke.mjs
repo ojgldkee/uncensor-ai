@@ -16,8 +16,8 @@ const appIds=[...app.matchAll(/\$\(['"]([^'"]+)['"]\)/g)].map(x=>x[1]);
 const missing=[...new Set(appIds)].filter(id=>!htmlIds.includes(id)&&id!=='emptyAddKnowledge');
 expect(missing.length===0,'app.js references missing HTML IDs: '+missing.join(', '));
 
-const knowledgePicker=html.match(/<input\\b[^>]*\\bid="knowledgeFile"[^>]*>/i)?.[0]||'';
-expect(Boolean(knowledgePicker)&&(!/\\baccept=/.test(knowledgePicker)||/\\baccept=["'][^"']*\\.pdf/i.test(knowledgePicker)),'Knowledge file picker must allow PDF files');
+const knowledgePicker=html.match(/<input\b[^>]*\bid="knowledgeFile"[^>]*>/i)?.[0]||'';
+expect(Boolean(knowledgePicker)&&(!/\baccept=/.test(knowledgePicker)||/\baccept=["'][^"']*\.pdf/i.test(knowledgePicker)),'Knowledge file picker must allow PDF files');
 expect(app.includes("application/pdf")&&app.includes("extractKnowledgePdf"),'PDF Knowledge extraction support is missing');
 expect(app.includes("/api/knowledge/ocr-page")&&api.includes("ocrPdfPage"),'PDF AI OCR fallback is missing');
 expect(app.includes("/api/knowledge/pdf")&&api.includes("knowledgePdfCreate"),'Persistent PDF upload handoff is missing');
