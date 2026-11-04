@@ -86,7 +86,7 @@ assert.ok(code.includes("'/api/knowledge/ocr-page'"),'Browser OCR must have a pr
 }
 
 assert.ok(/id="knowledgeMediaFile"[^>]+multiple/.test(html),'Video picker must support multi-select');
-assert.ok(/\.srt,\.vtt/.test(html),'Subtitle files must be importable as Knowledge');
+assert.ok(app.includes('isSupportedKnowledgeTextFile')&&app.includes('srt|vtt'),'Subtitle files must be importable as Knowledge');
 assert.ok(app.includes("r.status==='failed'&&r.file"),'Failed PDF uploads must be retryable without reselecting the file');
 assert.ok(apiSource.includes("if (path === '/api/knowledge/ocr-page'"),'Authenticated OCR fallback route must exist');
 assert.ok(apiSource.includes("operation:'pdf_ocr_fallback'"),'AI OCR usage must be metered');
