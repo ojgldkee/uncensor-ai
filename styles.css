@@ -402,3 +402,15 @@
 .unanswered-notice button{flex-shrink:0;padding:8px 11px;border:1px solid #6687ac;border-radius:8px;background:#172740;color:#e5f1ff;font-weight:700;cursor:pointer}
 .unanswered-notice button:hover{background:#233d5b}
 @media(max-width:560px){.unanswered-notice{flex-direction:column;align-items:flex-start}.unanswered-notice button{width:100%;min-height:38px}}
+
+
+/* v49: protect the mobile chat viewport from oversized content/avatars. */
+.main-panel{isolation:isolate;overflow:hidden}
+.messages{min-height:0;overflow-x:hidden;overflow-y:auto}
+.message,.message-content,.message-body{min-width:0;max-width:100%}
+.message-body img,.message-body svg,.message-body canvas{max-width:100%;height:auto}
+.brand-mark.neural-mark{width:34px;min-width:34px;height:34px;max-width:34px;max-height:34px;flex:none}
+.hero-orb.neural-mark{width:54px!important;height:54px!important;max-width:54px;max-height:54px;flex:none;contain:layout paint}
+.message .avatar.neural-mark{width:27px!important;height:27px!important;max-width:27px;max-height:27px;flex:none;contain:layout paint}
+.message.assistant .message-body{overflow-wrap:anywhere}
+.unanswered-notice{position:relative;z-index:2}
