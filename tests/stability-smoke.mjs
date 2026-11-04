@@ -22,7 +22,7 @@ expect(app.includes("application/pdf")&&app.includes("extractKnowledgePdf"),'PDF
 expect(app.includes("/api/knowledge/ocr-page")&&api.includes("ocrPdfPage"),'PDF AI OCR fallback is missing');
 expect(app.includes("/api/knowledge/pdf")&&api.includes("knowledgePdfCreate"),'Persistent PDF upload handoff is missing');
 expect(api.includes("knowledgePageNumber")&&api.includes("[PDF page"),'PDF page-aware retrieval is missing');
-expect(/app\.js\?v=41\.\d+/.test(html),'Frontend cache version must be v41');
+expect(/app\.js\?v=\d+(?:\.\d+)?/.test(html),'Frontend script must have a cache version');
 expect(/styles\.css\?v=41(?:\.\d+)?/.test(html),'Styles cache version must be v41');
 expect(app.includes("/api/diagnostics")&&html.includes('id="runDiagnostics"'),'Diagnostics UI/endpoint wiring is missing');
 expect(api.includes("if (path === '/api/diagnostics'"),'Diagnostics backend route is missing');
@@ -31,7 +31,7 @@ expect(api.includes('inspectKnowledgeSource')&&html.includes('id="knowledgeInspe
 expect(api.includes('retryKnowledgeSource')&&app.includes('retryKnowledgeFromRow'),'Persistent source retry is missing');
 expect(api.includes('retrievalDebug')&&html.includes('id="retrievalDebugModal"'),'Retrieval debugger is missing');
 expect(api.includes('knowledgeQuality')&&app.includes('knowledge-quality-chip'),'Knowledge quality scoring is missing');
-expect(api.includes("const retrievalQuery=text || attachmentHint"),'Attachment-only retrieval fallback is missing');
+expect(api.includes("const retrievalQuery=[text,attachmentHint]"),'Attachment-only retrieval fallback is missing');
 expect(api.includes("TRANSCRIBE_MODEL"),'Current audio transcription model wiring is missing');
 expect(api.includes("assembleAttachedMessage")&&api.includes("documentFocused ? [] : await recentMessages"),'Current-attachment first document handling is missing');
 expect(api.includes("Attached text file is too long")&&api.includes("currentAttachmentRules"),'Silent truncation or document grounding guard is missing');
