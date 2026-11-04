@@ -510,6 +510,8 @@ async function send(text){
   let node=null;
   state.pendingRuns.set(run.key,run);state.followLatest=true;
   state.messages.push(user);appendMessage(user);
+  // Keep a visible in-chat status while a slow model is being contacted.
+  if(runIsVisible(run))node=appendMessage({role:'assistant',content:'_Connecting to a model and checking your saved context…_',sources:[]},false);
   clearPendingAttachments();
   $('input').value='';autoGrow();refreshSendingUI();renderConversations();
 
@@ -558,7 +560,7 @@ async function send(text){
           }
           if(e.type==='token'){
             assistant.content+=e.text||'';
-            if(runIsVisible(run)&&performance.now()-lastRender>120){
+            if(runIsVisible(run)&&performance.now()-lastRender>350){
               paint();
               lastRender=performance.now();
             }
@@ -595,7 +597,9 @@ async function send(text){
         }
         renderMessages();recordClientError('chat-generation',e);toast(problem+suffix,5500);
       }else{
-        toast('Answer recovered from the server.',3500);
+        const latest=String(state.messages[state.messages.length-1]?.content||'');
+        const failed=/no available model|request preserved|response interrupted|could not complete/i.test(latest);
+        toast(failed?'Generation interrupted; details are saved in this chat.':'Answer recovered from the server.',4500);
       }
     }else if(e?.name!=='AbortError'&&!run.controller.signal.aborted){
       recordClientError('backgroundChat',e);
