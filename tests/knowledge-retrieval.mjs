@@ -38,7 +38,7 @@ console.log('Knowledge ranking and explainability regression tests passed');
 import fs from 'node:fs';
 const api=fs.readFileSync('supabase/functions/uncensor-api/index.ts','utf8');
 const schema=fs.readFileSync('supabase/backend_v3.sql','utf8');
-assert.match(api,/rankKnowledgeCandidatesDetailed\(query,candidates/,'API must rerank broad candidates with debug metadata');
+assert.match(api,/rankKnowledgeCandidatesDetailed\(rankingQuery,candidates/,'API must rerank broad candidates with debug metadata');
 assert.match(api,/match_count:100/,'API must retrieve a broad candidate pool before reranking');
 assert.match(api,/include_global:includeGlobal/,'API must preserve Global setting');
 assert.match(api,/knowledgeSourceMeta\(ctx.knowledge\)/,'API must bind cited refs to selected chunks');
